@@ -3,13 +3,21 @@ daemon
 daemon.exe
 daemon_linux
 daemon_go
+daemon_mac_*
+daemonrun
 *.exe
 
 # debug binary
 cli
 
+# logs
+*.log
+
 # config with user data
 config.apk
+
+# scripts (local)
+tmux.sh
 
 # OS
 .DS_Store
