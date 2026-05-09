@@ -13,7 +13,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	xterm "github.com/gitpod-io/xterm-go"
+	xterm "github.com/CLIAnywhere/xterm-go"
 
 	"golang.org/x/term"
 )
@@ -946,7 +946,7 @@ func rawTerminalPassthrough(conn *websocket.Conn, sessionID string, sessionName 
 				// if scrolling, any input resets to bottom
 				if localTerm.Buffer().YDisp < localTerm.Buffer().YBase {
 					termMu.Lock()
-					localTerm.ScrollReset()
+					localTerm.ScrollToBottom()
 					termMu.Unlock()
 					sendRender(renderSignal{allDirty: true})
 				}

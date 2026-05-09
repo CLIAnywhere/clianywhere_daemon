@@ -60,15 +60,14 @@ func NewFileTransferManager(d *Daemon, logger Logger) *FileTransferManager {
 	// initialize staging directory, clear old files
 	home, err := os.UserHomeDir()
 	if err != nil {
-		logPrintf(ftm.logger, "[filetransfer]", "get HOME failed: %v", err)
-		return ftm
+		fatalExit("failed to get HOME directory: %v", err)
 	}
 	ftm.stagedDir = filepath.Join(home, transFilesDir)
 
 	// clear staging directory
 	os.RemoveAll(ftm.stagedDir)
 	if err := os.MkdirAll(ftm.stagedDir, 0755); err != nil {
-		logPrintf(ftm.logger, "[filetransfer]", "create staging directory failed: %v", err)
+		fatalExit("failed to create staging directory %s: %v", ftm.stagedDir, err)
 	}
 
 	logPrintf(ftm.logger, "[filetransfer]", "staging directory: %s", ftm.stagedDir)

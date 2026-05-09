@@ -1,13 +1,11 @@
 module github.com/CLIAnywhere/daemon
 
-go 1.24
-
-toolchain go1.24.4
+go 1.25
 
 require (
 	github.com/UserExistsError/conpty v0.1.4
 	github.com/creack/pty v1.1.24
-	github.com/gitpod-io/xterm-go v0.0.0
+	github.com/CLIAnywhere/xterm-go v0.1.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/pion/stun v0.6.1
 	github.com/pion/webrtc/v3 v3.3.6
@@ -15,8 +13,6 @@ require (
 	golang.org/x/sys v0.30.0
 	golang.org/x/term v0.29.0
 )
-
-replace github.com/gitpod-io/xterm-go => ../xterm-go
 
 require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
@@ -42,3 +38,6 @@ require (
 	golang.org/x/net v0.35.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+// Local development: uncomment the following line to use local xterm-go source
+// replace github.com/CLIAnywhere/xterm-go => ../xterm-go-latest

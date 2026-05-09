@@ -4,7 +4,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	xterm "github.com/gitpod-io/xterm-go"
+	xterm "github.com/CLIAnywhere/xterm-go"
 )
 
 // Terminal wraps xterm-go, maintains terminal state and scrollback

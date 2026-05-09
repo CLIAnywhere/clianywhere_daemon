@@ -38,14 +38,17 @@ func runApp(logger Logger) {
 
 	// read cached accessKey first — no service started yet
 	newBind := false
-	accessKey, _ := loadAccessKey()
+	accessKey, err := loadAccessKey()
+	if err != nil {
+		fatalExit("failed to read accesskey: %v", err)
+	}
 	if accessKey == "" {
 		// no cached key → need console for interactive binding
 		ensureConsole()
 		accessKey, _ = GetAccessKey(cfg, logger)
 		if accessKey != "" {
 			if err := saveAccessKey(accessKey); err != nil {
-				logWarnf(logger, "[daemon]", "warning: failed to save accesskey: %v", err)
+				fatalExit("failed to save accesskey: %v", err)
 			}
 			newBind = true
 			releaseConsole()

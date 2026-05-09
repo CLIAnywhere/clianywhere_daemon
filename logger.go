@@ -106,12 +106,13 @@ type FileLogger struct {
 }
 
 func newFileLogger() *FileLogger {
-	ensureDir()
+	if err := ensureDir(); err != nil {
+		fatalExit("failed to create %s directory: %v", accessKeyDir, err)
+	}
 	path := logFilePath()
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
-		// fallback to stderr
-		return &FileLogger{logger: log.New(os.Stderr, "", log.LstdFlags|log.Lshortfile)}
+		fatalExit("failed to open log file %s: %v", path, err)
 	}
 	return &FileLogger{
 		logger: log.New(f, "", log.LstdFlags|log.Lshortfile),

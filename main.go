@@ -167,7 +167,10 @@ func runDaemonized() {
 	d := NewDaemon("", cfg, logger)
 	d.Init()
 
-	accessKey, _ := loadAccessKey()
+	accessKey, err := loadAccessKey()
+	if err != nil {
+		fatalExit("failed to read accesskey: %v", err)
+	}
 	if accessKey != "" {
 		d.StartRemote(accessKey)
 	}

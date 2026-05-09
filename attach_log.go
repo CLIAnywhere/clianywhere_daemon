@@ -57,13 +57,18 @@ var (
 
 func attachLog(format string, args ...interface{}) {
 	attachLogOnce.Do(func() {
-		home, _ := os.UserHomeDir()
+		home, err := os.UserHomeDir()
+		if err != nil {
+			fatalExit("failed to get HOME directory: %v", err)
+		}
 		dir := filepath.Join(home, ".clianywhere")
-		os.MkdirAll(dir, 0700)
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			fatalExit("failed to create %s directory: %v", dir, err)
+		}
 		path := filepath.Join(dir, "attach.log")
 		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 		if err != nil {
-			return
+			fatalExit("failed to open attach log file %s: %v", path, err)
 		}
 		attachLogFile = f
 		fmt.Fprintf(f, "\n=== attach_log opened pid=%d %s ===\n", os.Getpid(), time.Now().Format(time.RFC3339))
