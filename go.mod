@@ -1,4 +1,4 @@
-module codeanywhere/daemon_go
+module github.com/CLIAnywhere/daemon
 
 go 1.24
 
