@@ -17,8 +17,15 @@ import (
 )
 
 func main() {
+	// prevent running inside daemon PTY (e.g. app terminal)
+	if os.Getenv("IS_CLIANYWHERE_PTY") == "1" && os.Getenv("CLIANYWHERE_DAEMONIZED") != "1" {
+		fmt.Fprintln(os.Stderr, "Error: cannot run claw inside CliAnyWhere terminal")
+		os.Exit(1)
+	}
+
 	// daemonized subprocess entry: skip interaction, load cached key directly
 	if os.Getenv("CLIANYWHERE_DAEMONIZED") == "1" {
+		os.Unsetenv("CLIANYWHERE_DAEMONIZED")
 		runDaemonized()
 		return
 	}

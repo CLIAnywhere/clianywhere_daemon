@@ -30,7 +30,7 @@ func startPty(shellPath, dir string, cols, rows int) (ptyConn, int, error) {
 	if dir != "" {
 		opts = append(opts, conpty.ConPtyWorkDir(dir))
 	}
-	opts = append(opts, conpty.ConPtyEnv(append(os.Environ(), "TERM=xterm-256color")))
+	opts = append(opts, conpty.ConPtyEnv(append(os.Environ(), "TERM=xterm-256color", "IS_CLIANYWHERE_PTY=1")))
 
 	cpty, err := conpty.Start(shellPath, opts...)
 	if err != nil {
