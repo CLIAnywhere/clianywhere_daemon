@@ -1,0 +1,28 @@
+# binaries
+daemon
+daemon.exe
+daemon_linux
+daemon_go
+*.exe
+
+# debug binary
+cli
+
+# config with user data
+config.apk
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Claude Code
+.claude/
+
+# access key cache
+.accesskey
