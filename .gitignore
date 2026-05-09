@@ -18,6 +18,7 @@ config.apk
 
 # scripts (local)
 tmux.sh
+build.sh
 
 # OS
 .DS_Store
