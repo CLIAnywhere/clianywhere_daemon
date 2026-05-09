@@ -1,3 +1,5 @@
+github.com/CLIAnywhere/xterm-go v0.1.0 h1:2gtPv+ILHZpZp8/9neL0Mqez2LVx3It0xlTt83KaxX0=
+github.com/CLIAnywhere/xterm-go v0.1.0/go.mod h1:3MnOYb/ixP8LjYpVCW4bE9S2U50pldCgs8Vmw0zRMq0=
 github.com/UserExistsError/conpty v0.1.4 h1:+3FhJhiqhyEJa+K5qaK3/w6w+sN3Nh9O9VbJyBS02to=
 github.com/UserExistsError/conpty v0.1.4/go.mod h1:PDglKIkX3O/2xVk0MV9a6bCWxRmPVfxqZoTG/5sSd9I=
 github.com/creack/pty v1.1.24 h1:bJrF4RRfyJnbTJqzRLHzcGaZK1NeM5kTC9jGgovnR1s=

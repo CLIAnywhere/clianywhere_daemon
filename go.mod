@@ -3,9 +3,9 @@ module github.com/CLIAnywhere/daemon
 go 1.25
 
 require (
+	github.com/CLIAnywhere/xterm-go v0.1.0
 	github.com/UserExistsError/conpty v0.1.4
 	github.com/creack/pty v1.1.24
-	github.com/CLIAnywhere/xterm-go v0.1.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/pion/stun v0.6.1
 	github.com/pion/webrtc/v3 v3.3.6
