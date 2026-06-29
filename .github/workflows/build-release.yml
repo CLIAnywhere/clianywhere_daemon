@@ -1,0 +1,170 @@
+name: Build Release
+
+# Manually triggered: build web/cli binaries for each platform, zip them,
+# and publish to a GitHub Release.
+# Artifacts:
+#   claw-web-windows-amd64.zip   (Windows GUI, -H windowsgui)
+#   claw-web-darwin-amd64.zip    (macOS Intel)
+#   claw-web-darwin-arm64.zip    (macOS Apple Silicon)
+#   claw-web-linux-amd64.zip     (Linux)
+#   claw-cli-linux-amd64.zip     (Linux CLI)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v1.0.0). Leave empty to use short commit SHA."
+        required: false
+        default: ""
+      prerelease:
+        description: "Mark as prerelease"
+        required: false
+        default: "true"
+      notes:
+        description: "Release notes (optional)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: web-windows-amd64
+            goos: windows
+            goarch: amd64
+            tags: web
+            bin: claw-web.exe
+            ldflags: "-H windowsgui"
+            archive: claw-web-windows-amd64.zip
+          - target: web-darwin-amd64
+            goos: darwin
+            goarch: amd64
+            tags: web
+            bin: claw-web
+            ldflags: ""
+            archive: claw-web-darwin-amd64.zip
+          - target: web-darwin-arm64
+            goos: darwin
+            goarch: arm64
+            tags: web
+            bin: claw-web
+            ldflags: ""
+            archive: claw-web-darwin-arm64.zip
+          - target: web-linux-amd64
+            goos: linux
+            goarch: amd64
+            tags: web
+            bin: claw-web
+            ldflags: ""
+            archive: claw-web-linux-amd64.zip
+          - target: cli-linux-amd64
+            goos: linux
+            goarch: amd64
+            tags: cli
+            bin: claw-cli
+            ldflags: ""
+            archive: claw-cli-linux-amd64.zip
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          set -e
+          echo "Building ${{ matrix.target }} (${GOOS}/${GOARCH}, tags=${{ matrix.tags }})"
+          if [ -n "${{ matrix.ldflags }}" ]; then
+            go build -tags '${{ matrix.tags }}' -ldflags '${{ matrix.ldflags }}' -o '${{ matrix.bin }}' ./cmd/claw
+          else
+            go build -tags '${{ matrix.tags }}' -o '${{ matrix.bin }}' ./cmd/claw
+          fi
+          file '${{ matrix.bin }}' || true
+
+      - name: Package
+        run: |
+          set -e
+          # Pack only the binary; do not include sources or other files.
+          zip '${{ matrix.archive }}' '${{ matrix.bin }}'
+          ls -lh '${{ matrix.archive }}'
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.archive }}
+          path: ${{ matrix.archive }}
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Publish Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compute tag
+        id: tag
+        run: |
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            short="$(echo ${{ github.sha }} | cut -c1-7)"
+            echo "tag=v$(date +'%Y%m%d')-${short}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -lh artifacts
+
+      - name: Create Release and Upload Assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          prerelease="${{ github.event.inputs.prerelease }}"
+          notes_file="$(mktemp)"
+          if [ -n "${{ github.event.inputs.notes }}" ]; then
+            printf '%s\n' "${{ github.event.inputs.notes }}" > "$notes_file"
+          else
+            printf 'Auto-built release for %s\n\n' "${{ steps.tag.outputs.tag }}" > "$notes_file"
+            printf 'SHA: %s\n' "${{ github.sha }}" >> "$notes_file"
+          fi
+
+          # If the tag already exists, append assets; otherwise create a new release.
+          if gh release view "${{ steps.tag.outputs.tag }}" -R "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "Release ${{ steps.tag.outputs.tag }} exists, uploading assets..."
+            gh release upload "${{ steps.tag.outputs.tag }}" artifacts/*.zip -R "${{ github.repository }}" --clobber
+          else
+            gh release create "${{ steps.tag.outputs.tag }}" \
+              artifacts/*.zip \
+              -R "${{ github.repository }}" \
+              --title "${{ steps.tag.outputs.tag }}" \
+              --notes-file "$notes_file" \
+              $([ "$prerelease" = "true" ] && echo --prerelease || echo --latest=false)
+          fi
+
+          echo "Release URL:"
+          gh release view "${{ steps.tag.outputs.tag }}" -R "${{ github.repository }}" --json url -q .url
