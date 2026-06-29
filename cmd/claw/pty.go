@@ -30,10 +30,48 @@ type Session struct {
 	Rows      int
 	CreatedAt int64
 	History   *Terminal // xterm-go terminal state machine, maintains logical lines and scrollback
-	Controller io.Writer // current local controller (nil if none), for local attach passthrough output
+
+	// multiple local controllers (browser attach), keyed by clientID
+	Controllers   map[string]io.WriteCloser
+	controllersMu sync.Mutex
 
 	done chan struct{}
 	once sync.Once
+}
+
+// AddController register a local controller (browser attach)
+func (s *Session) AddController(clientID string, c io.WriteCloser) {
+	s.controllersMu.Lock()
+	s.Controllers[clientID] = c
+	s.controllersMu.Unlock()
+}
+
+// RemoveController remove a local controller from this session.
+// Does NOT close the underlying connection — the connection may still be
+// attached to other sessions. Connection lifecycle is managed by the caller.
+func (s *Session) RemoveController(clientID string) {
+	s.controllersMu.Lock()
+	delete(s.Controllers, clientID)
+	s.controllersMu.Unlock()
+}
+
+// CloseAllControllers remove all local controllers from this session.
+// Does NOT close connections — they may be attached to other sessions.
+func (s *Session) CloseAllControllers() {
+	s.controllersMu.Lock()
+	defer s.controllersMu.Unlock()
+	for id := range s.Controllers {
+		delete(s.Controllers, id)
+	}
+}
+
+// Broadcast send data to all local controllers, ignore individual write errors
+func (s *Session) Broadcast(data []byte) {
+	s.controllersMu.Lock()
+	defer s.controllersMu.Unlock()
+	for _, c := range s.Controllers {
+		c.Write(data)
+	}
 }
 
 // Close close session
@@ -73,9 +111,8 @@ func (pm *PTYManager) CreatePool(count int, shell string) []*Session {
 	var results []*Session
 	for i := 0; i < count; i++ {
 		id := pm.generateID()
-		s, err := pm.Create(id, shell, pm.cfg.DefaultCols, pm.cfg.DefaultRows)
+		s, err := pm.Create(id, shell, pm.cfg.DefaultCols, pm.cfg.DefaultRows, true)
 		if err != nil {
-			logPrintf(pm.logger, "[pty]", "create session failed: %v", err)
 			continue
 		}
 		results = append(results, s)
@@ -84,7 +121,7 @@ func (pm *PTYManager) CreatePool(count int, shell string) []*Session {
 }
 
 // Create create new PTY session
-func (pm *PTYManager) Create(id, shell string, cols, rows int) (*Session, error) {
+func (pm *PTYManager) Create(id, shell string, cols, rows int, loginShell bool) (*Session, error) {
 	if cols <= 0 {
 		cols = pm.cfg.DefaultCols
 	}
@@ -99,21 +136,22 @@ func (pm *PTYManager) Create(id, shell string, cols, rows int) (*Session, error)
 		homeDir = home
 	}
 
-	conn, pid, err := startPty(shellPath, homeDir, cols, rows)
+	conn, pid, err := startPty(shellPath, homeDir, cols, rows, loginShell)
 	if err != nil {
 		return nil, err
 	}
 
 	s := &Session{
-		ID:        id,
-		pty:       conn,
-		PID:       pid,
-		Shell:     shell,
-		Cols:      cols,
-		Rows:      rows,
-		CreatedAt: time.Now().Unix(),
-		History:   NewTerminal(pm.cfg.HistoryLines, cols, rows),
-		done:      make(chan struct{}),
+		ID:          id,
+		pty:         conn,
+		PID:         pid,
+		Shell:       shell,
+		Cols:        cols,
+		Rows:        rows,
+		CreatedAt:   time.Now().Unix(),
+		History:     NewTerminal(pm.cfg.HistoryLines, cols, rows),
+		Controllers: make(map[string]io.WriteCloser),
+		done:        make(chan struct{}),
 	}
 
 	pm.mu.Lock()
@@ -152,13 +190,17 @@ func (pm *PTYManager) Resize(id string, cols, rows int) {
 	s := pm.sessions[id]
 	pm.mu.Unlock()
 	if s != nil {
+		// Skip no-op resizes to avoid triggering a PTY redraw that would
+		// make the remote app receive duplicate content.
+		if s.Cols == cols && s.Rows == rows {
+			return
+		}
 		s.pty.Resize(cols, rows)
 		// Recover from potential xterm reflow panics to prevent daemon crash.
 		// If resize panics, rebuild History with new dimensions (scrollback lost for this session).
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					logPrintf(pm.logger, "[pty]", "PTYManager.Resize: recovered from xterm reflow panic: %v (cols=%d rows=%d), resetting History", r, cols, rows)
 					s.History = NewTerminal(pm.cfg.HistoryLines, cols, rows)
 				}
 			}()

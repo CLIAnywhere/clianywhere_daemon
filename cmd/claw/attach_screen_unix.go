@@ -1,8 +1,11 @@
-//go:build !windows
+//go:build cli && !windows
 
 package main
 
 import "os"
+
+// useSystemCursor: Unix keeps custom cursor rendering (alternate screen + hidden system cursor)
+const useSystemCursor = false
 
 // initAlternateScreen Unix: enter alternate screen buffer, restore original terminal on exit
 func initAlternateScreen() {

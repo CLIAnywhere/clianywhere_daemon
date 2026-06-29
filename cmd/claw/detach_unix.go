@@ -6,28 +6,77 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"syscall"
+	"strconv"
+	"strings"
 )
 
-// daemonize on Unix: daemonization via fork
-// parent exits, child restarts from main() (detects CLIANYWHERE_DAEMONIZED env var)
-func daemonize() {
-	exe, err := os.Executable()
+var _daemonized = false
+
+// forkToBackground forks child process to run daemon in background.
+// Returns the child's reported port (>0) in parent process, or 0 if already daemonized child.
+// Parent should use the port to connect to daemon via WS.
+func forkToBackground() int {
+	if os.Getenv("CLIANYWHERE_DAEMONIZED") == "1" {
+		_daemonized = true
+		return 0 // already the child process
+	}
+
+	// Create pipe: child writes port, parent reads
+	r, w, err := os.Pipe()
 	if err != nil {
-		fmt.Printf("daemonize failed: %v\n", err)
-		return
+		fmt.Fprintf(os.Stderr, "Failed to create pipe: %v\n", err)
+		return 0
 	}
 
-	cmd := exec.Command(exe)
+	cmd := exec.Command(os.Args[0], os.Args[1:]...)
 	cmd.Env = append(os.Environ(), "CLIANYWHERE_DAEMONIZED=1")
-	cmd.Stdin = nil
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-
+	cmd.ExtraFiles = []*os.File{w} // fd 3 in child
+	// redirect child stdout/stderr to log file
+	if logF, logErr := openDaemonLogFile(); logErr == nil {
+		cmd.Stdout = logF
+		cmd.Stderr = logF
+	}
 	if err := cmd.Start(); err != nil {
-		fmt.Printf("daemonize failed: %v\n", err)
+		w.Close()
+		r.Close()
+		fmt.Fprintf(os.Stderr, "Failed to fork: %v\n", err)
+		return 0
+	}
+	w.Close()
+
+	// Read port from child (blocks until child writes)
+	buf := make([]byte, 32)
+	n, _ := r.Read(buf)
+	r.Close()
+	portStr := strings.TrimSpace(string(buf[:n]))
+	port, _ := strconv.Atoi(portStr)
+
+	return port
+}
+
+// notifyParentPort writes the port to fd 3 (pipe to parent process)
+func notifyParentPort(port int) {
+	if !_daemonized {
 		return
 	}
-	os.Exit(0)
+	f := os.NewFile(3, "pipe")
+	if f != nil {
+		f.WriteString(strconv.Itoa(port))
+		f.Close()
+	}
+}
+
+// isDaemonized returns true if this is a forked child process
+func isDaemonized() bool {
+	return _daemonized
+}
+
+// openDaemonLogFile opens ~/.clianywhere/daemon.log for child process output
+func openDaemonLogFile() (*os.File, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+	os.MkdirAll(home+"/"+accessKeyDir, 0700)
+	return os.OpenFile(home+"/"+accessKeyDir+"/"+logFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 }

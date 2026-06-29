@@ -1,16 +1,17 @@
 package main
 
 import (
+	"bytes"
 	"sync"
 	"sync/atomic"
 
-	xterm "github.com/CLIAnywhere/xterm-go"
+	xterm "github.com/CLIAnywhere/daemon/internal/xterm"
 )
 
 // Terminal wraps xterm-go, maintains terminal state and scrollback
 // replaces old VT100 implementation, provides more complete VT500 terminal emulation
-// mu protects all read/write operations on term/addon, ensures mutual exclusion between readLoop writes and handleHistory serialization：
-// during serialization readLoop blocks on Lock → PTY buffer full → shell auto-pauses output (kernel backpressure)
+// mu protects all read/write operations on term/addon, ensures mutual exclusion between readLoop writes and handleHistory serialization:
+// during serialization readLoop blocks on Lock -> PTY buffer full -> shell auto-pauses output (kernel backpressure)
 type Terminal struct {
 	mu    sync.Mutex
 	term  *xterm.Terminal
@@ -41,6 +42,9 @@ func (t *Terminal) Write(data []byte) uint64 {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if len(data) > 0 {
+		// strip ED 3 (clear scrollback) to prevent history loss from "clear" / Codex / etc.
+		data = bytes.ReplaceAll(data, []byte("\033[3J"), nil)
+		data = bytes.ReplaceAll(data, []byte("\033[3;J"), nil)
 		t.term.Write(data)
 	}
 	return atomic.AddUint64(&t.seq, 1)
@@ -56,7 +60,7 @@ func (t *Terminal) Read() ([]byte, uint64) {
 }
 
 // ReadAt re-serialize terminal state at target client size
-// principle: serialize main terminal → write to temp terminal (target size) → serialize again
+// principle: serialize main terminal -> write to temp terminal (target size) -> serialize again
 // long lines wrap correctly at target column width, avoiding excessive whitespace on client
 // holds lock throughout, ensures no new data written during serialization
 func (t *Terminal) ReadAt(targetCols, targetRows int) ([]byte, uint64) {

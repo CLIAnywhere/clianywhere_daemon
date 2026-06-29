@@ -70,7 +70,6 @@ func NewFileTransferManager(d *Daemon, logger Logger) *FileTransferManager {
 		fatalExit("failed to create staging directory %s: %v", ftm.stagedDir, err)
 	}
 
-	logPrintf(ftm.logger, "[filetransfer]", "staging directory: %s", ftm.stagedDir)
 	return ftm
 }
 
@@ -133,7 +132,6 @@ func (ftm *FileTransferManager) StageFile(srcPath string) error {
 	ftm.staged = append(ftm.staged, entry)
 	ftm.mu.Unlock()
 
-	logPrintf(ftm.logger, "[filetransfer]", "file staged: %s → %s (%d bytes, id=%d)", origName, stagedName, info.Size(), fileID)
 
 	// notify frontend file list
 	ftm.sendFileList()
@@ -172,7 +170,6 @@ func (ftm *FileTransferManager) HandleRequest(fileID uint32) error {
 	}
 	ftm.mu.Unlock()
 
-	logPrintf(ftm.logger, "[filetransfer]", "frontend requests transfer: %s (id=%d)", entry.Info.FileName, fileID)
 
 	// use original send logic
 	if err := ftm.startSendFromStaged(entry.FilePath); err != nil {
@@ -202,7 +199,6 @@ func (ftm *FileTransferManager) HandleDelete(fileID uint32) {
 		// delete staged file
 		os.Remove(entry.FilePath)
 		ftm.staged = append(ftm.staged[:idx], ftm.staged[idx+1:]...)
-		logPrintf(ftm.logger, "[filetransfer]", "deleted staged file: %s (id=%d)", entry.Info.FileName, fileID)
 	}
 
 	// if transferring, also cancel
@@ -244,7 +240,6 @@ func (ftm *FileTransferManager) startSendFromStaged(filePath string) error {
 	ftm.active[fileID] = task
 	ftm.mu.Unlock()
 
-	logPrintf(ftm.logger, "[filetransfer]", "start sending: %s (%d bytes, %d chunks, id=%d)", fileName, fileSize, totalChunks, fileID)
 
 	ftm.daemon.sendJSON(&Message{
 		Type:        TypeFileSendBegin,
@@ -274,7 +269,6 @@ func (ftm *FileTransferManager) sendFile(task *FileSendTask, chunkSize int) {
 
 	f, err := os.Open(task.FilePath)
 	if err != nil {
-		logPrintf(ftm.logger, "[filetransfer]", "open file failed: %v", err)
 		ftm.daemon.sendJSON(&Message{
 			Type:   TypeFileSendError,
 			FileID: task.ID,
@@ -288,16 +282,9 @@ func (ftm *FileTransferManager) sendFile(task *FileSendTask, chunkSize int) {
 	buf := make([]byte, chunkSize)
 	header := make([]byte, 9)
 
-	ftm.daemon.channelMu.RLock()
-	mode := ftm.daemon.channelMode
-	ftm.daemon.channelMu.RUnlock()
-	logPrintf(ftm.logger, "[filetransfer]", "send channel: %s, chunkSize=%d, totalChunks=%d, fileSize=%d",
-		mode, chunkSize, task.TotalChunks, task.FileSize)
-
 	for chunkIdx := 0; chunkIdx < task.TotalChunks; chunkIdx++ {
 		select {
 		case <-task.cancel:
-			logPrintf(ftm.logger, "[filetransfer]", "file send cancelled: %s (id=%d)", task.FileName, task.ID)
 			ftm.daemon.sendJSON(&Message{
 				Type:   TypeFileSendCancel,
 				FileID: task.ID,
@@ -308,7 +295,6 @@ func (ftm *FileTransferManager) sendFile(task *FileSendTask, chunkSize int) {
 
 		n, err := io.ReadFull(f, buf)
 		if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
-			logPrintf(ftm.logger, "[filetransfer]", "read file failed: %v", err)
 			ftm.daemon.sendJSON(&Message{
 				Type:   TypeFileSendError,
 				FileID: task.ID,
@@ -330,29 +316,17 @@ func (ftm *FileTransferManager) sendFile(task *FileSendTask, chunkSize int) {
 		copy(frame[0:9], header)
 		copy(frame[9:], buf[:n])
 
-		sendStart := time.Now()
 		if len(frame) > 31*1024 {
-			logPrintf(ftm.logger, "[filetransfer]", "WARNING: frame too large: %d bytes (chunk=%d/%d, id=%d)", len(frame), chunkIdx, task.TotalChunks, task.ID)
 		}
 		sent := ftm.daemon.sendBytesCancelable(frame, 256*1024, task.cancel)
-		sendDur := time.Since(sendStart)
 		if !sent {
-			logPrintf(ftm.logger, "[filetransfer]", "send cancelled: %s (id=%d, chunk=%d)", task.FileName, task.ID, chunkIdx)
 			return
 		}
 
 		task.SentChunks = chunkIdx + 1
 
-		if (chunkIdx+1)%50 == 0 || sendDur > 100*time.Millisecond {
-			elapsed := time.Since(task.StartTime).Seconds()
-			speed := float64(task.SentChunks*chunkSize) / 1024 / 1024 / elapsed
-			logDebugf(ftm.logger, "[filetransfer]", "progress: %d/%d chunks (%.1f MB/s) sendWait=%v",
-				task.SentChunks, task.TotalChunks, speed, sendDur.Round(time.Millisecond))
-		}
 	}
-
 	checksum := fmt.Sprintf("%x", hash.Sum(nil))
-	logPrintf(ftm.logger, "[filetransfer]", "send complete: %s (checksum=%s, id=%d)", task.FileName, checksum[:16], task.ID)
 
 	endJSON, _ := json.Marshal(&Message{
 		Type:     TypeFileSendEnd,
@@ -385,7 +359,6 @@ func (ftm *FileTransferManager) CancelAll() {
 		close(task.cancel)
 	}
 	ftm.active = make(map[uint32]*FileSendTask)
-	logPrintf(ftm.logger, "[filetransfer]", "cancelled all file send tasks")
 }
 
 // handleIPCUpload handle HTTP IPC file send request (daemon send command)
@@ -549,7 +522,6 @@ func (ftm *FileTransferManager) sendDriveList() {
 	}
 
 	sort.Slice(dirs, func(i, j int) bool { return dirs[i].Name < dirs[j].Name })
-	logPrintf(ftm.logger, "[filetransfer]", "drive list: %d found", len(dirs))
 	ftm.daemon.sendJSON(&Message{
 		Type: TypeDirList,
 		Path: "",

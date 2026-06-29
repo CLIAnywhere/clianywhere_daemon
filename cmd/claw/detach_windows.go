@@ -2,33 +2,18 @@
 
 package main
 
-import (
-	"fmt"
-	"os"
-	"os/exec"
-	"syscall"
-)
+// forkToBackground is a no-op on Windows (-H windowsgui already background).
+// Returns 0 (no fork happened).
+func forkToBackground() int {
+	return 0
+}
 
-// daemonize on Windows: launch independent subprocess via DETACHED_PROCESS
-// DETACHED_PROCESS detaches subprocess from parent console, CMD can immediately reclaim prompt
-func daemonize() {
-	exe, err := os.Executable()
-	if err != nil {
-		fmt.Printf("daemonize failed: %v\n", err)
-		return
-	}
+// notifyParentPort is a no-op on Windows.
+func notifyParentPort(port int) {
+	// no-op
+}
 
-	cmd := exec.Command(exe)
-	cmd.Env = append(os.Environ(), "CLIANYWHERE_DAEMONIZED=1")
-	cmd.Stdin = nil
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		CreationFlags: 0x00000008 | 0x00000200, // DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
-	}
-	if err := cmd.Start(); err != nil {
-		fmt.Printf("daemonize failed: %v\n", err)
-		return
-	}
-	os.Exit(0)
+// isDaemonized always returns false on Windows (no fork)
+func isDaemonized() bool {
+	return false
 }

@@ -39,8 +39,7 @@ func GenerateBindCode(cfg *Config) (*BindCodeResult, error) {
 	deviceInfo := fmt.Sprintf("%s|%s", hostname, runtime.GOOS)
 
 	// get TurnServer
-	signaling := NewSignalingClient(cfg.GlobalServerURL, nil)
-	tsEntry, err := signaling.GetTurnServer()
+	tsEntry, err := SelectBestTurnServer(nil)
 	if err != nil || tsEntry == nil {
 		return nil, fmt.Errorf("failed to get TurnServer: %w", err)
 	}

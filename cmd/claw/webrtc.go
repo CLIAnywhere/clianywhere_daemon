@@ -35,7 +35,7 @@ type WebRTCConn struct {
 }
 
 // NewWebRTCConn create WebRTC connection manager
-func NewWebRTCConn(accessKey string, _ *SignalingClient, cfg *Config, logger Logger) *WebRTCConn {
+func NewWebRTCConn(accessKey string, cfg *Config, logger Logger) *WebRTCConn {
 	return &WebRTCConn{
 		accessKey:    accessKey,
 		cfg:          cfg,
@@ -56,7 +56,6 @@ func (w *WebRTCConn) Connected() bool {
 func (w *WebRTCConn) SendJSON(msg *Message) {
 	data, err := json.Marshal(msg)
 	if err != nil {
-		logPrintf(w.logger, "[webrtc]", "serialize message failed: %v", err)
 		return
 	}
 	text := string(data)
@@ -75,7 +74,6 @@ func (w *WebRTCConn) SendJSON(msg *Message) {
 func (w *WebRTCConn) SendJSONWithBackpressure(msg *Message, threshold uint64) {
 	data, err := json.Marshal(msg)
 	if err != nil {
-		logPrintf(w.logger, "[webrtc]", "serialize message failed: %v", err)
 		return
 	}
 	text := string(data)
@@ -93,7 +91,6 @@ func (w *WebRTCConn) SendJSONWithBackpressure(msg *Message, threshold uint64) {
 		if ba < threshold {
 			break
 		}
-		logDebugf(w.logger, "[webrtc]", "backpressure wait: bufferedAmount=%d > threshold=%d", ba, threshold)
 		time.Sleep(5 * time.Millisecond)
 	}
 
@@ -166,7 +163,6 @@ func (w *WebRTCConn) Answer(sdpOffer string, iceServers []webrtc.ICEServer) (str
 		if cj.SDPMLineIndex != nil {
 			idx = int(*cj.SDPMLineIndex)
 		}
-		logDebugf(w.logger, "[P2P-DEBUG-DA]", "local ICE (answerer): typ=%s %s:%d", candidate.Typ.String(), candidate.Address, candidate.Port)
 
 		if w.OnICECandidateFunc != nil {
 			w.OnICECandidateFunc(cj.Candidate, sdpMid, idx)
@@ -175,7 +171,6 @@ func (w *WebRTCConn) Answer(sdpOffer string, iceServers []webrtc.ICEServer) (str
 
 	// connection state callback
 	pc.OnICEConnectionStateChange(func(state webrtc.ICEConnectionState) {
-		logDebugf(w.logger, "[P2P-DEBUG-DA]", "ICE state (answerer): %s", state.String())
 		switch state {
 		case webrtc.ICEConnectionStateConnected:
 			select {
@@ -183,7 +178,6 @@ func (w *WebRTCConn) Answer(sdpOffer string, iceServers []webrtc.ICEServer) (str
 			default:
 			}
 		case webrtc.ICEConnectionStateFailed:
-			w.logICEDiagnostics()
 			select {
 			case w.connectCh <- fmt.Errorf("ICE %s", state.String()):
 			default:
@@ -201,7 +195,6 @@ func (w *WebRTCConn) Answer(sdpOffer string, iceServers []webrtc.ICEServer) (str
 	})
 
 	pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
-		logDebugf(w.logger, "[P2P-DEBUG-DA]", "connState (answerer): %s", state.String())
 		switch state {
 		case webrtc.PeerConnectionStateFailed, webrtc.PeerConnectionStateClosed:
 			select {
@@ -217,11 +210,9 @@ func (w *WebRTCConn) Answer(sdpOffer string, iceServers []webrtc.ICEServer) (str
 
 	// receive DataChannel (answerer does not create, created by offerer)
 	pc.OnDataChannel(func(dc *webrtc.DataChannel) {
-		logPrintf(w.logger, "[webrtc]", "received DataChannel: %s", dc.Label())
 		w.dc = dc
 
 		dc.OnOpen(func() {
-			logPrintf(w.logger, "[webrtc]", "DataChannel opened")
 			w.mu.Lock()
 			w.connected = true
 			pending := w.pendingMsgs
@@ -233,7 +224,6 @@ func (w *WebRTCConn) Answer(sdpOffer string, iceServers []webrtc.ICEServer) (str
 		})
 
 		dc.OnClose(func() {
-			logPrintf(w.logger, "[webrtc]", "DataChannel closed")
 			w.mu.Lock()
 			w.connected = false
 			w.mu.Unlock()
@@ -278,7 +268,6 @@ func (w *WebRTCConn) Answer(sdpOffer string, iceServers []webrtc.ICEServer) (str
 		return "", fmt.Errorf("set local description failed: %w", err)
 	}
 
-	logPrintf(w.logger, "[webrtc]", "SDP answer generated (%d bytes), ICE candidates sent via TS WebSocket", len(pc.LocalDescription().SDP))
 	return pc.LocalDescription().SDP, nil
 }
 
@@ -310,12 +299,3 @@ func (w *WebRTCConn) WaitDisconnected() error {
 	return <-w.disconnectCh
 }
 
-// logICEDiagnostics output diagnostic info on ICE failure
-func (w *WebRTCConn) logICEDiagnostics() {
-	logPrintf(w.logger, "[webrtc]", "===== ICE diagnostics =====")
-	logPrintf(w.logger, "[webrtc]", "local candidate count: %d", len(w.localCands))
-	for _, c := range w.localCands {
-		logPrintf(w.logger, "[webrtc]", "  local: %s", c)
-	}
-	logPrintf(w.logger, "[webrtc]", "===== diagnostics end =====")
-}

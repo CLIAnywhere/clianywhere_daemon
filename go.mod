@@ -3,10 +3,12 @@ module github.com/CLIAnywhere/daemon
 go 1.25
 
 require (
-	github.com/CLIAnywhere/xterm-go v0.1.0
 	github.com/UserExistsError/conpty v0.1.4
 	github.com/creack/pty v1.1.24
+	github.com/go-ole/go-ole v1.3.0
+	github.com/google/go-cmp v0.7.0
 	github.com/gorilla/websocket v1.5.3
+	github.com/lxn/win v0.0.0-20210218163916-a377121e959e
 	github.com/pion/stun v0.6.1
 	github.com/pion/webrtc/v3 v3.3.6
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
@@ -38,6 +40,3 @@ require (
 	golang.org/x/net v0.35.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
-
-// Local development: uncomment the following line to use local xterm-go source
-// replace github.com/CLIAnywhere/xterm-go => ../xterm-go-latest

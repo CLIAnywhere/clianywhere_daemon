@@ -1,11 +1,8 @@
 package main
 
 import (
-	"bufio"
-	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 )
 
@@ -19,18 +16,6 @@ func accesskeyFilePath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(home, accessKeyDir, accessKeyFile), nil
-}
-
-// fatalExit prints error to stderr and exits.
-// On Windows, waits for user to press any key before exiting.
-func fatalExit(format string, args ...any) {
-	ensureConsole()
-	fmt.Fprintf(os.Stderr, format+"\n", args...)
-	if runtime.GOOS == "windows" {
-		fmt.Fprintln(os.Stderr, "Press any key to exit...")
-		bufio.NewScanner(os.Stdin).Scan()
-	}
-	os.Exit(1)
 }
 
 // ensureDir creates ~/.clianywhere/ directory if it doesn't exist

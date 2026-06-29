@@ -62,13 +62,55 @@ const (
 	TypeProxyError     = "proxy_error"     // Daemon→App: connection failed
 	TypeProxyClose     = "proxy_close"     // Bidirectional: close notification
 
+	// HTTP proxy fetch (Web app: SW-based proxy)
+	TypeProxyHttpFetch    = "proxy_http_fetch"    // App→Daemon: HTTP-level fetch request
+	TypeProxyHttpResponse = "proxy_http_response" // Daemon→App: HTTP fetch response
+
+	// WebSocket proxy (Web app: SW-based proxy)
+	TypeProxyWsConnect   = "proxy_ws_connect"   // App→Daemon: request WS connection
+	TypeProxyWsConnected = "proxy_ws_connected" // Daemon→App: WS connection established
+	TypeProxyWsMessage   = "proxy_ws_message"   // Bidirectional: WS data frame
+	TypeProxyWsClose     = "proxy_ws_close"     // Bidirectional: WS close
+	TypeProxyWsError     = "proxy_ws_error"     // Daemon→App: WS connection error
+
 	// Local Attach
 	TypeAttach        = "attach"         // Client→LocalServer: request attach session
 	TypeDetach        = "detach"         // Client→LocalServer: detach session
 	TypeAttachOK      = "attach_ok"      // LocalServer→Client: attach success confirmation
 	TypeLocalTakeover = "local_takeover" // Client→LocalServer: local takeover, kick app
 	TypeStatus        = "status"         // Client→LocalServer: query daemon connection status
-		TypeStop          = "stop"           // Client→LocalServer: stop daemon process
+	TypeStop          = "stop"           // Client→LocalServer: stop daemon process
+
+	// Security Code (remote connection verification)
+	TypeSecCodeVerify      = "sec_code_verify"       // App→Daemon: verify security code
+	TypeSecCodeOK          = "sec_code_ok"           // Daemon→App: verification passed
+	TypeSecCodeError       = "sec_code_error"        // Daemon→App: verification failed (also used for unauthorized operations)
+
+	// Security Code Management (local connection)
+	TypeSetSecCode         = "set_sec_code"          // LocalWeb/CLI→Daemon: set security code
+	TypeSetSecCodeResult   = "set_sec_code_result"   // Daemon→Local: set result
+	TypeUnsetSecCode       = "unset_sec_code"        // LocalWeb/CLI→Daemon: clear security code
+	TypeUnsetSecCodeResult = "unset_sec_code_result" // Daemon→Local: clear result
+	TypeGetSecCodeStatus   = "get_sec_code_status"   // LocalWeb→Daemon: query security code state
+	TypeSecCodeStatus      = "sec_code_status"       // Daemon→Local: return whether code is set
+
+	// Server Manager (Local Attach extension for web UI)
+	TypeGetServerStatus   = "get_server_status"   // Client→LocalServer: query daemon state + accesskey
+	TypeServerStatus      = "server_status"        // LocalServer→Client: return state + masked accesskey
+	TypeSetAccessKey      = "set_accesskey"        // Client→LocalServer: set accesskey and start remote
+	TypeAccessKeyResult   = "accesskey_result"     // LocalServer→Client: set accesskey result
+	TypeRequestBindCode   = "request_bindcode"     // Client→LocalServer: request QR binding flow
+	TypeBindCodeResult    = "bindcode_result"      // LocalServer→Client: return QR payload
+	TypeBindCodeAccessKey = "bindcode_accesskey"   // LocalServer→Client: push accesskey from QR scan
+	TypeConfirmBindCode   = "confirm_bindcode"     // Client→LocalServer: confirm and save QR accesskey
+	TypeSubscribeLogs     = "subscribe_logs"       // Client→LocalServer: subscribe to log stream
+	TypeUnsubscribeLogs   = "unsubscribe_logs"     // Client→LocalServer: unsubscribe from log stream
+	TypeLogData           = "log_data"             // LocalServer→Client: log entry push
+
+	// Desktop Shortcut (Windows localweb only — first browser connection)
+	TypeAskShortcut      = "ask_shortcut"      // Daemon→App: ask user whether to create desktop shortcut
+	TypeShortcutResponse = "shortcut_response" // App→Daemon: user's choice (Success=true means yes)
+	TypeShortcutResult   = "shortcut_result"   // Daemon→App: result of createDesktopShortcut (Success + Error)
 )
 
 // DataChannel JSON message envelope
@@ -78,6 +120,7 @@ type Message struct {
 	SessionID    string                   `json:"session_id,omitempty"`
 	Data         string                   `json:"data,omitempty"`
 	Shell        string                   `json:"shell,omitempty"`
+	LoginShell   *bool                    `json:"login_shell,omitempty"` // nil → use default (true)
 	Cols         int                      `json:"cols,omitempty"`
 	Rows         int                      `json:"rows,omitempty"`
 	PID          int                      `json:"pid,omitempty"`
@@ -85,6 +128,7 @@ type Message struct {
 	Error        string                   `json:"error,omitempty"`
 	Sessions     []string                 `json:"sessions,omitempty"`
 	SessionInfos []SessionInfo            `json:"session_infos,omitempty"`
+	Shells       []ShellInfo              `json:"shells,omitempty"`
 	Seq          uint64                   `json:"seq,omitempty"`
 	TotalChunks  int                      `json:"total_chunks"`
 	ChunkIndex   int                      `json:"chunk_index"`
@@ -102,6 +146,25 @@ type Message struct {
 	Entries        *DirEntries  `json:"entries,omitempty"`
 	Name           string       `json:"name,omitempty"`
 	SystemInfo     string       `json:"system_info,omitempty"`
+	SecCodeRequired bool        `json:"sec_code_required,omitempty"`
+
+	// server manager
+	AccessKey  string     `json:"accesskey,omitempty"`
+	DeviceName string     `json:"device_name,omitempty"`
+	QRPayload  string     `json:"qr_payload,omitempty"`
+	BindCode   string     `json:"bindcode,omitempty"`
+	Success    bool       `json:"success,omitempty"`
+	LogEntries []LogEntry `json:"log_entries,omitempty"`
+
+	// HTTP proxy fetch (Web SW proxy)
+	StatusCode  int    `json:"status_code,omitempty"`
+	StatusText  string `json:"status_text,omitempty"`
+	HeadersJSON string `json:"headers_json,omitempty"`
+	Method      string `json:"method,omitempty"`
+	BodyBase64  string `json:"body_base64,omitempty"`
+
+	// WebSocket proxy
+	IsBinary bool `json:"is_binary,omitempty"` // WS message is binary (vs text)
 }
 
 // SessionInfo session summary information
@@ -111,6 +174,12 @@ type SessionInfo struct {
 	Shell     string `json:"shell"`
 	CreatedAt int64  `json:"created_at"`
 	Name      string `json:"name"`
+}
+
+// ShellInfo available shell entry
+type ShellInfo struct {
+	Name string `json:"name"` // display name: "bash", "zsh", "cmd", "pwsh", etc.
+	Path string `json:"path"` // absolute path: "/bin/bash", resolved at runtime on Windows
 }
 
 // StagedFile staged file entry for transfer

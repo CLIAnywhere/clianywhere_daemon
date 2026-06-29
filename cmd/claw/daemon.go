@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -25,7 +26,6 @@ type Daemon struct {
 	cfg       *Config
 	logger    Logger
 	ptyMgr    *PTYManager
-	signaling *SignalingClient
 
 	rtc   *WebRTCConn
 	rtcMu sync.RWMutex
@@ -46,6 +46,12 @@ type Daemon struct {
 
 	// mutual-kick flag: set to 1 when kicked is received, blocks ongoing P2P establishment
 	kicked int32
+
+	// security code: enabled flag and per-connection verification state
+	// secCodeEnabled: 1=code file exists, 0=no code set (updated on save/clear, no file IO in hot path)
+	// secCodeVerified: 1=current app has verified, 0=not yet (reset on peer_online/p2p_offer/code change)
+	secCodeEnabled  int32
+	secCodeVerified int32
 
 	// set of sessions subscribed by frontend: only sessions that went through request_history receive real-time output
 	subscribed map[string]bool
@@ -84,7 +90,7 @@ func NewDaemon(accessKey string, cfg *Config, logger Logger) *Daemon {
 	}
 }
 
-// Init initialize local resources（does not depend on accessKey, called once at startup）
+// Init initialize local resources (does not depend on accessKey, called once at startup)
 // creates PTY pool, local WS, IPC and other local services, then daemon attach is available
 func (d *Daemon) Init() {
 	// 1. initialize PTY manager
@@ -108,10 +114,11 @@ func (d *Daemon) Init() {
 	}
 
 	// 2. create initial session pool
-	pool := d.ptyMgr.CreatePool(d.cfg.PoolSize, d.cfg.DefaultShell)
-	logPrintf(d.logger, "[daemon]", "created pool of %d sessions", len(pool))
-	for _, s := range pool {
-		logPrintf(d.logger, "[daemon]", "pool session %s (pid=%d)", s.ID, s.PID)
+	d.ptyMgr.CreatePool(d.cfg.PoolSize, d.cfg.DefaultShell)
+
+	// 2.5 initialize secCodeEnabled from file
+	if HasSecurityCode() {
+		atomic.StoreInt32(&d.secCodeEnabled, 1)
 	}
 
 	// 3. initialize file transfer manager
@@ -124,7 +131,7 @@ func (d *Daemon) Init() {
 	d.startIPCServer()
 
 	// 6. start local WebSocket service (for local attach)
-	d.localServer = StartLocalServer(d)
+	d.localServer = StartLocalServer(d, d.logger, nil)
 }
 
 // StartRemote start remote connection with accessKey (signaling + TS relay)
@@ -132,13 +139,9 @@ func (d *Daemon) Init() {
 func (d *Daemon) StartRemote(accessKey string) {
 	d.accessKey = accessKey
 
-	// initialize signaling client
-	d.signaling = NewSignalingClient(d.cfg.GlobalServerURL, d.logger)
-
 	// start TurnServer WebSocket connection (auto-selects best in background + auto-reconnect)
 	d.startTSRelay()
 
-	logPrintf(d.logger, "[daemon]", "accesskey=%s server=%s forcets=%v", accessKey, d.cfg.GlobalServerURL, d.cfg.ForceTS)
 }
 
 // handleP2PSignal handle P2P signaling messages from TS WebSocket
@@ -147,7 +150,6 @@ func (d *Daemon) handleP2PSignal(raw map[string]any) {
 
 	// forcets mode: silently discard P2P signaling, let frontend timeout and fallback
 	if d.cfg.ForceTS {
-		logDebugf(d.logger, "[CHAN]", "P2P signaling %s discarded (forcets)", msgType)
 		return
 	}
 
@@ -155,46 +157,50 @@ func (d *Daemon) handleP2PSignal(raw map[string]any) {
 	case "p2p_offer":
 		sdpOffer, _ := raw["sdp"].(string)
 		if sdpOffer == "" {
-			logPrintf(d.logger, "[daemon]", "received p2p_offer but SDP is empty")
 			return
 		}
+		// Take out the early ICE candidates buffered by handleP2PICE before
+		// the offer arrived, and hand them to startP2PAsAnswerer for replay,
+		// so they are not lost when the buffer is cleared.
 		d.rtcMu.Lock()
+		earlyICE := d.pendingICE
 		d.pendingICE = nil
 		d.pendingICEMode = true
 		d.rtcMu.Unlock()
-		go d.startP2PAsAnswerer(sdpOffer)
+		go d.startP2PAsAnswerer(sdpOffer, earlyICE)
+
+	case "peer_online":
+		// New app connection: reset security-code verification state (per-connection)
+		d.logger.Infof("[TS] peer_online: new app connection, resetting secCodeVerified")
+		atomic.StoreInt32(&d.secCodeVerified, 0)
 
 	case "peer_offline":
-		logPrintf(d.logger, "[daemon]", "received peer_offline (via P2P signal)")
 		d.handlePeerOffline()
 
 	case "p2p_ice":
-		logDebugf(d.logger, "[P2P-DEBUG-DA]", "recv p2p_ice from browser")
 		d.handleP2PICE(raw)
 	}
 }
 
-// startP2PAsAnswerer after receiving p2p_offer from browser, create WebRTC answerer
-func (d *Daemon) startP2PAsAnswerer(sdpOffer string) {
+// startP2PAsAnswerer after receiving p2p_offer from browser, create WebRTC answerer.
+// earlyICE holds the early candidates buffered by handleP2PICE before the offer arrived; they must be replayed together.
+func (d *Daemon) startP2PAsAnswerer(sdpOffer string, earlyICE []map[string]any) {
 	// new frontend sent p2p_offer, old connection is done, clearing kicked flag
 	atomic.StoreInt32(&d.kicked, 0)
+	// New app connection: reset security-code verification state
+	atomic.StoreInt32(&d.secCodeVerified, 0)
 
 	// close old P2P connection
 	d.CloseRTC()
 
-	startTime := time.Now()
-	logDebugf(d.logger, "[P2P-DEBUG-DA]", "=== recv p2p_offer, start answerer ===")
+	// Subscriptions and local controllers are intentionally NOT cleared here.
+	// They are session-level / transport-independent and survive channel switches.
 
 	// use WebRTCConn answerer mode
-	rtc := NewWebRTCConn(d.accessKey, nil, d.cfg, d.logger) // signaling=nil, no HTTP
+	rtc := NewWebRTCConn(d.accessKey, d.cfg, d.logger)
 
 	// ICE candidates sent via TS WebSocket
 	rtc.OnICECandidateFunc = func(candidate, sdpMid string, sdpMLineIndex int) {
-		short := candidate
-		if len(short) > 60 {
-			short = short[:60]
-		}
-		logDebugf(d.logger, "[P2P-DEBUG-DA]", "local ICE: %s +%v", short, time.Since(startTime))
 		data, _ := json.Marshal(map[string]any{
 			"type":            "p2p_ice",
 			"candidate":       candidate,
@@ -227,46 +233,53 @@ func (d *Daemon) startP2PAsAnswerer(sdpOffer string) {
 	// create answer
 	answer, err := rtc.Answer(sdpOffer, iceServers)
 	if err != nil {
-		logErrorf(d.logger, "[daemon]", "P2P answer failed: %v", err)
 		return
 	}
-	logDebugf(d.logger, "[P2P-DEBUG-DA]", "answer created +%v", time.Since(startTime))
 
 	// send answer back to browser (via TS)
-	logDebugf(d.logger, "[P2P-DEBUG-DA]", "send p2p_answer +%v", time.Since(startTime))
 	d.wsSendRaw(map[string]any{
 		"type":       "p2p_answer",
 		"sdp_answer": answer,
 	})
 
 	// set rtc and replay buffered ICE candidates
+	// Take the buffered slice inside the lock, then replay outside the lock
+	// to avoid pion re-entry/deadlock via AddICECandidate callbacks.
 	d.rtcMu.Lock()
 	d.rtc = rtc
-	pending := d.pendingICE
+	buffered := d.pendingICE
 	d.pendingICE = nil
 	d.pendingICEMode = false
 	d.rtcMu.Unlock()
 
-	for _, iceRaw := range pending {
-		candidate, _ := iceRaw["candidate"].(string)
-		sdpMid, _ := iceRaw["sdp_mid"].(string)
+	// First replay the early candidates buffered before the offer arrived,
+	// then replay the candidates that arrived after the offer but before rtc was ready.
+	for _, raw := range earlyICE {
+		candidate, _ := raw["candidate"].(string)
+		sdpMid, _ := raw["sdp_mid"].(string)
 		sdpMLineIndex := 0
-		if v, ok := iceRaw["sdp_mline_index"].(float64); ok {
+		if v, ok := raw["sdp_mline_index"].(float64); ok {
 			sdpMLineIndex = int(v)
 		}
-		if err := rtc.AddRemoteICE(candidate, sdpMid, sdpMLineIndex); err != nil {
-			logErrorf(d.logger, "[daemon]", "replay buffered ICE failed: %v", err)
+		if candidate != "" {
+			rtc.AddRemoteICE(candidate, sdpMid, sdpMLineIndex)
 		}
 	}
-	if len(pending) > 0 {
-		logPrintf(d.logger, "[daemon]", "replayed %d buffered ICE candidates", len(pending))
+	// replay buffered candidates that arrived while rtc was nil
+	for _, raw := range buffered {
+		candidate, _ := raw["candidate"].(string)
+		sdpMid, _ := raw["sdp_mid"].(string)
+		sdpMLineIndex := 0
+		if v, ok := raw["sdp_mline_index"].(float64); ok {
+			sdpMLineIndex = int(v)
+		}
+		if candidate != "" {
+			rtc.AddRemoteICE(candidate, sdpMid, sdpMLineIndex)
+		}
 	}
-
-	logPrintf(d.logger, "[daemon]", "P2P answer sent, waiting for connection...")
 
 	// waiting for connection to establish (10s timeout)
 	if err := rtc.WaitConnected(10 * time.Second); err != nil {
-		logErrorf(d.logger, "[daemon]", "P2P connection timeout: %v", err)
 		rtc.Close()
 		d.rtcMu.Lock()
 		if d.rtc == rtc {
@@ -276,7 +289,6 @@ func (d *Daemon) startP2PAsAnswerer(sdpOffer string) {
 		return
 	}
 
-	logPrintf(d.logger, "[daemon]", "P2P connected, waiting for browser channel_select")
 
 	// block until P2P disconnects
 	rtc.WaitDisconnected()
@@ -289,7 +301,6 @@ func (d *Daemon) startP2PAsAnswerer(sdpOffer string) {
 		// d.rtc taken over by new connection, old goroutine does not interfere
 		d.rtcMu.Unlock()
 		rtc.Close()
-		logPrintf(d.logger, "[daemon]", "P2P disconnected (taken over by new connection)")
 		return
 	}
 	d.rtcMu.Unlock()
@@ -307,11 +318,9 @@ func (d *Daemon) startP2PAsAnswerer(sdpOffer string) {
 			"type":    "channel_failed",
 			"channel": "p2p",
 		})
-		logPrintf(d.logger, "[daemon]", "P2P channel down, browser notified")
 	}
 
 	rtc.Close()
-	logPrintf(d.logger, "[daemon]", "P2P disconnected")
 
 	// P2P disconnected, cancel all in-progress file transfers
 	if d.fileTransfer != nil {
@@ -321,10 +330,16 @@ func (d *Daemon) startP2PAsAnswerer(sdpOffer string) {
 		d.proxyManager.CloseAll()
 	}
 
-	// clear subscriptions, stop PTY output
-	d.subMu.Lock()
-	d.subscribed = make(map[string]bool)
-	d.subMu.Unlock()
+	// clear subscriptions only if TS is not available as fallback.
+	// If TS is still connected, app can fall back to it and subscriptions persist.
+	d.wsMu.RLock()
+	tsAlive := d.wsRelay != nil && d.wsRelay.Connected()
+	d.wsMu.RUnlock()
+	if !tsAlive {
+		d.subMu.Lock()
+		d.subscribed = make(map[string]bool)
+		d.subMu.Unlock()
+	}
 }
 
 // handleP2PICE handle ICE candidates from browser
@@ -337,8 +352,15 @@ func (d *Daemon) handleP2PICE(raw map[string]any) {
 	}
 
 	d.rtcMu.Lock()
-	if d.pendingICEMode && d.rtc == nil {
-		// rtc not yet created, buffering candidate
+	// Buffering conditions are relaxed:
+	//   - pendingICEMode=true: a new offer has arrived and rtc is still being
+	//     created (including the edge case where d.rtc still points to the old
+	//     connection)
+	//   - d.rtc==nil: the offer has not arrived yet, so early p2p_ice from the
+	//     app is also buffered
+	// Buffer whenever either condition holds, to avoid candidates being dropped
+	// or fed to the stale rtc.
+	if d.pendingICEMode || d.rtc == nil {
 		d.pendingICE = append(d.pendingICE, raw)
 		d.rtcMu.Unlock()
 		return
@@ -346,11 +368,7 @@ func (d *Daemon) handleP2PICE(raw map[string]any) {
 	rtc := d.rtc
 	d.rtcMu.Unlock()
 
-	if rtc != nil {
-		if err := rtc.AddRemoteICE(candidate, sdpMid, sdpMLineIndex); err != nil {
-			logErrorf(d.logger, "[daemon]", "add remote ICE failed: %v", err)
-		}
-	}
+	rtc.AddRemoteICE(candidate, sdpMid, sdpMLineIndex)
 }
 
 // wsSendRaw send raw JSON via TS WebSocket
@@ -388,12 +406,11 @@ func (d *Daemon) startTSRelay() {
 			default:
 			}
 
-			// 1. call Worker API to get optimal TS
+			// 1. probe TS servers and select best
 			d.notifyState("connecting")
-			logPrintf(d.logger, "[ts]", "requesting Worker to assign TurnServer...")
-			best, err := d.signaling.GetTurnServer()
+			best, err := SelectBestTurnServer(d.logger)
 			if err != nil {
-				logErrorf(d.logger, "[ts]", "fetch failed: %v, retrying in 10s", err)
+				d.logger.Errorf("[TS] select turn server failed: %v", err)
 				if d.sleepOrStop(10 * time.Second) {
 					d.notifyState("stopped")
 					return
@@ -401,7 +418,7 @@ func (d *Daemon) startTSRelay() {
 				continue
 			}
 			if best == nil {
-				logPrintf(d.logger, "[ts]", "no available TurnServer, retrying in 10s")
+				d.logger.Errorf("[TS] no turn server available")
 				if d.sleepOrStop(10 * time.Second) {
 					d.notifyState("stopped")
 					return
@@ -421,9 +438,24 @@ func (d *Daemon) startTSRelay() {
 				d.handleP2PSignal(raw)
 			}
 
-			logPrintf(d.logger, "[ts]", "connecting directly to TS: %s", best.WSURL())
 			if err := relay.Connect(best.WSURL()); err != nil {
-				logErrorf(d.logger, "[ts]", "connect/login failed: %v, retrying in 10s", err)
+				// login failed (invalid accesskey etc.): log error and exit, no reconnect
+				if _, ok := err.(*LoginError); ok {
+					d.logger.Errorf("[TS] login failed: %v", err)
+					d.notifyState("stopped")
+					return
+				}
+				// IP blocked by TurnServer (same-day ban): long backoff
+				if _, ok := err.(*IPBlockedError); ok {
+					d.logger.Errorf("[TS] %v (retry in 1h)", err)
+					if d.sleepOrStop(1 * time.Hour) {
+						d.notifyState("stopped")
+						return
+					}
+					continue
+				}
+				// other connection errors: retry
+				d.logger.Errorf("[TS] connection failed: %v", err)
 				if d.sleepOrStop(10 * time.Second) {
 					d.notifyState("stopped")
 					return
@@ -440,7 +472,6 @@ func (d *Daemon) startTSRelay() {
 			d.wsMu.Unlock()
 
 			d.notifyState("connected")
-			logPrintf(d.logger, "[ts]", "WebSocket connected, waiting...")
 
 			// waiting for disconnect or stop
 			select {
@@ -452,7 +483,6 @@ func (d *Daemon) startTSRelay() {
 				return
 			}
 
-			logPrintf(d.logger, "[ts]", "connection lost, reconnecting in 5s")
 
 			// TS disconnected, cancel all in-progress file transfers
 			if d.fileTransfer != nil {
@@ -463,9 +493,17 @@ func (d *Daemon) startTSRelay() {
 			}
 
 			// clear subscriptions, stop PTY output
-			d.subMu.Lock()
-			d.subscribed = make(map[string]bool)
-			d.subMu.Unlock()
+			// preserve subscriptions when P2P is active — P2P is independent of TS
+			// and survives TS reconnects. Clearing subscriptions while P2P is live
+			// causes silent output loss (app keeps P2P heartbeat, sees no output).
+			d.rtcMu.RLock()
+			p2pActive := d.rtc != nil && d.rtc.Connected()
+			d.rtcMu.RUnlock()
+			if !p2pActive {
+				d.subMu.Lock()
+				d.subscribed = make(map[string]bool)
+				d.subMu.Unlock()
+			}
 
 			d.wsMu.Lock()
 			if d.wsRelay == relay {
@@ -494,8 +532,24 @@ func (d *Daemon) sleepOrStop(duration time.Duration) bool {
 // notifyState notify state change (no-op when OnStateChange is nil, CLI version unaffected)
 func (d *Daemon) notifyState(state string) {
 	d.connState.Store(state)
+	switch state {
+	case "connecting":
+		d.logger.Infof("[TS] connecting to turn server...")
+	case "connected":
+		d.logger.Infof("[TS] connected to turn server")
+	case "stopped":
+		d.logger.Infof("[TS] connection stopped")
+	}
 	if d.OnStateChange != nil {
-		d.OnStateChange(state)
+		// Invoke the callback asynchronously to prevent synchronous I/O
+		// inside the callback from blocking the main loop.
+		// (Historical lesson: writeEarlyLog blocking on a write() syscall
+		// once deadlocked startTSRelay permanently.)
+		go d.OnStateChange(state)
+	}
+	// push state to all local WS clients for real-time UI updates
+	if d.localServer != nil {
+		d.localServer.PushState(state, d.accessKey)
 	}
 }
 
@@ -508,7 +562,21 @@ func (d *Daemon) GetState() string {
 	return ""
 }
 
-// Stop stop daemon connection loop (does not disconnect PTY), can be called by GUI
+// exitWithReason writes exit info to ~/.clianywhere/exit.log then calls os.Exit(0).
+// Use instead of bare os.Exit(0) so crashes leave a trace.
+func (d *Daemon) exitWithReason(reason, detail string) {
+	home, err := os.UserHomeDir()
+	if err == nil {
+		line := fmt.Sprintf("[%s] reason=%s detail=%s\n", time.Now().Format(time.DateTime), reason, detail)
+		f, err := os.OpenFile(filepath.Join(home, accessKeyDir, "exit.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		if err == nil {
+			f.WriteString(line)
+			f.Close()
+		}
+	}
+	os.Exit(0)
+}
+
 func (d *Daemon) Stop() {
 	d.stopOnce.Do(func() {
 		close(d.stopCh)
@@ -576,23 +644,16 @@ func (d *Daemon) Destroy() {
 	if d.ptyMgr != nil {
 		d.ptyMgr.DestroyAll()
 	}
-	logPrintf(d.logger, "[daemon]", "destroyed")
 }
 
 // handleMessage handle messages from app (shared by WebRTC and WS)
 func (d *Daemon) handleMessage(msg *Message, source string) {
-	d.channelMu.RLock()
-	mode := d.channelMode
-	d.channelMu.RUnlock()
-	logDebugf(d.logger, "[CHAN]", "← RECV via=%s type=%s currentMode=%s", source, msg.Type, mode)
 	switch msg.Type {
 	case TypeKicked:
 		if msg.Reason == "daemon_replaced" {
-			logPrintf(d.logger, "[daemon]", "kicked: new daemon with same accesskey connected, exiting")
-			fmt.Println("kicked: new daemon with same accesskey connected, exiting")
-			os.Exit(0)
+			d.logger.Infof("[TS] kicked: new daemon with same accesskey connected, exiting")
+			d.exitWithReason("kicked", msg.Reason)
 		}
-		logPrintf(d.logger, "[daemon]", "received kicked notification, cleaning all connections")
 		atomic.StoreInt32(&d.kicked, 1)
 		if d.fileTransfer != nil {
 			d.fileTransfer.CancelAll()
@@ -612,20 +673,32 @@ func (d *Daemon) handleMessage(msg *Message, source string) {
 		d.subscribed = make(map[string]bool)
 		d.subMu.Unlock()
 	case TypePeerOffline:
-		logPrintf(d.logger, "[daemon]", "received peer_offline (via handleMessage), current channel=%s", mode)
 		d.handlePeerOffline()
+	case TypeSecCodeVerify:
+		d.handleSecCodeVerify(msg)
 	case TypeCreateSession:
+		if !d.checkSecCode() {
+			return
+		}
 		atomic.StoreInt32(&d.kicked, 0) // new frontend message, clearing kicked
 		d.handleCreateSession(msg)
 	case TypeDestroySession:
+		if !d.checkSecCode() {
+			return
+		}
 		d.ptyMgr.Destroy(msg.SessionID)
 		d.subMu.Lock()
 		delete(d.subscribed, msg.SessionID)
 		d.subMu.Unlock()
-		logPrintf(d.logger, "[daemon]", "session %s destroyed", msg.SessionID)
 	case TypeInput:
+		if !d.checkSecCode() {
+			return
+		}
 		d.ptyMgr.Write(msg.SessionID, []byte(msg.Data))
 	case TypeResize:
+		if !d.checkSecCode() {
+			return
+		}
 		if msg.Cols > 0 && msg.Rows > 0 {
 			d.ptyMgr.Resize(msg.SessionID, msg.Cols, msg.Rows)
 		}
@@ -669,8 +742,23 @@ func (d *Daemon) handleMessage(msg *Message, source string) {
 		if d.proxyManager != nil {
 			d.proxyManager.HandleClose(msg)
 		}
+	case TypeProxyHttpFetch:
+		if d.proxyManager != nil {
+			d.proxyManager.HandleHttpFetch(msg)
+		}
+	case TypeProxyWsConnect:
+		if d.proxyManager != nil {
+			d.proxyManager.HandleWsConnect(msg)
+		}
+	case TypeProxyWsMessage:
+		if d.proxyManager != nil {
+			d.proxyManager.HandleWsMessage(msg)
+		}
+	case TypeProxyWsClose:
+		if d.proxyManager != nil {
+			d.proxyManager.HandleWsClose(msg)
+		}
 	default:
-		logPrintf(d.logger, "[daemon]", "unknown message type: %s", msg.Type)
 	}
 }
 
@@ -682,7 +770,6 @@ func (d *Daemon) handleBinary(data []byte) {
 	opcode := data[0]
 	switch opcode {
 	case OpcodeFileTransfer:
-		logPrintf(d.logger, "[daemon]", "received frontend file transfer frame (%d bytes), not yet handled", len(data))
 	case OpcodeProxyData:
 		if len(data) < 5 {
 			return
@@ -693,14 +780,32 @@ func (d *Daemon) handleBinary(data []byte) {
 			d.proxyManager.HandleData(connID, payload)
 		}
 	default:
-		logPrintf(d.logger, "[daemon]", "received unknown binary frame opcode=0x%02X, %d bytes", opcode, len(data))
 	}
 }
 
 // handleCreateSession handle create session request
 func (d *Daemon) handleCreateSession(msg *Message) {
-	s, err := d.ptyMgr.Create(msg.SessionID, msg.Shell, d.cfg.DefaultCols, d.cfg.DefaultRows)
+	// Subscribe BEFORE creating PTY to prevent losing initial shell output.
+	// PTY readLoop starts inside Create and may produce output (shell prompt)
+	// before this handler resumes — if subscribed is still false at that point,
+	// sendOutput drops the data and the terminal shows blank until the next
+	// user input triggers a redraw.
+	d.subMu.Lock()
+	d.subscribed[msg.SessionID] = true
+	d.subMu.Unlock()
+
+	// nil LoginShell defaults to true (preserve previous behavior) so legacy
+	// clients that don't send the field still get a login shell.
+	loginShell := true
+	if msg.LoginShell != nil {
+		loginShell = *msg.LoginShell
+	}
+	s, err := d.ptyMgr.Create(msg.SessionID, msg.Shell, d.cfg.DefaultCols, d.cfg.DefaultRows, loginShell)
 	if err != nil {
+		// Clean up subscription on failure
+		d.subMu.Lock()
+		delete(d.subscribed, msg.SessionID)
+		d.subMu.Unlock()
 		d.sendJSON(&Message{
 			Type:      TypeError,
 			SessionID: msg.SessionID,
@@ -709,12 +814,6 @@ func (d *Daemon) handleCreateSession(msg *Message) {
 		return
 	}
 
-	// session created by frontend, auto-subscribed
-	d.subMu.Lock()
-	d.subscribed[msg.SessionID] = true
-	d.subMu.Unlock()
-
-	logPrintf(d.logger, "[daemon]", "session %s created (pid=%d)", s.ID, s.PID)
 	d.sendJSON(&Message{
 		Type:      TypeSessionCreated,
 		SessionID: s.ID,
@@ -726,11 +825,19 @@ func (d *Daemon) handleCreateSession(msg *Message) {
 // handleSessionList return current session list with system info
 func (d *Daemon) handleSessionList() {
 	sessions := d.ptyMgr.ListSessions()
-	logDebugf(d.logger, "[P2P-DEBUG-DA]", "handleSessionList: %d sessions", len(sessions))
+	d.channelMu.RLock()
+	mode := d.channelMode
+	d.channelMu.RUnlock()
+	d.logger.Infof("[SESSION] handleSessionList: %d sessions, channelMode=%s", len(sessions), mode)
+	for i, s := range sessions {
+		d.logger.Infof("[SESSION]   [%d] id=%s name=%s shell=%s", i, s.ID, s.Name, s.Shell)
+	}
 	d.sendJSON(&Message{
-		Type:         TypeSessionInfo,
-		SessionInfos: sessions,
-		SystemInfo:   getSystemInfo(),
+		Type:            TypeSessionInfo,
+		SessionInfos:    sessions,
+		SystemInfo:      getSystemInfo(),
+		Shells:          DetectShells(),
+		SecCodeRequired: atomic.LoadInt32(&d.secCodeEnabled) == 1,
 	})
 }
 
@@ -761,6 +868,8 @@ func (d *Daemon) handleHistory(msg *Message) {
 		data, seq = d.ptyMgr.GetHistory(msg.SessionID)
 	}
 
+	d.logger.Infof("[SESSION] handleHistory: session=%s cols=%d rows=%d dataLen=%d seq=%d", msg.SessionID, msg.Cols, msg.Rows, len(data), seq)
+
 	if len(data) <= 4096 {
 		d.sendJSON(&Message{
 			Type:      TypeHistoryData,
@@ -776,21 +885,6 @@ func (d *Daemon) handleHistory(msg *Message) {
 	d.subMu.Lock()
 	d.subscribed[msg.SessionID] = true
 	d.subMu.Unlock()
-
-	// if this session has a local controller (GUI/CLI attach), close connection and kick it
-	session := d.ptyMgr.Get(msg.SessionID)
-	if session != nil && session.Controller != nil {
-		traceLog("handleHistory: has Controller, type=%T", session.Controller)
-		if closer, ok := session.Controller.(io.Closer); ok {
-			traceLog("handleHistory: io.Closer assertion OK, calling Close()")
-			closer.Close()
-		} else {
-			traceLog("handleHistory: io.Closer assertion FAILED")
-		}
-		session.Controller = nil
-	} else {
-		traceLog("handleHistory: no Controller (nil=%v)", session.Controller == nil)
-	}
 }
 
 const historyChunkSize = 4096 // 4KB raw data per chunk
@@ -799,7 +893,7 @@ const historyChunkSize = 4096 // 4KB raw data per chunk
 func (d *Daemon) sendHistoryChunks(sessionID string, data []byte, seq uint64) {
 	total := (len(data) + historyChunkSize - 1) / historyChunkSize
 
-	// ① send start first, indicating total chunks
+	// (1) send start first, indicating total chunks
 	d.sendJSON(&Message{
 		Type:        TypeHistoryStart,
 		SessionID:   sessionID,
@@ -807,7 +901,7 @@ func (d *Daemon) sendHistoryChunks(sessionID string, data []byte, seq uint64) {
 		TotalChunks: total,
 	})
 
-	// ② send chunk by chunk
+	// (2) send chunk by chunk
 	for i := 0; i < total; i++ {
 		start := i * historyChunkSize
 		end := start + historyChunkSize
@@ -839,7 +933,7 @@ func (d *Daemon) sendHistoryChunks(sessionID string, data []byte, seq uint64) {
 		}
 	}
 
-	// ③ send end completion signal
+	// (3) send end completion signal
 	d.sendJSON(&Message{
 		Type:        TypeHistoryEnd,
 		SessionID:   sessionID,
@@ -854,11 +948,10 @@ func (d *Daemon) handlePeerOffline() {
 	d.channelMu.RUnlock()
 
 	if mode == "p2p" {
-		logPrintf(d.logger, "[daemon]", "P2P is active, ignoring TS layer peer_offline")
+		// P2P connection is still active; only the TS relay dropped.
 		return
 	}
 
-	logPrintf(d.logger, "[daemon]", "browser offline, releasing resources (mode=%s)", mode)
 	if d.fileTransfer != nil {
 		d.fileTransfer.CancelAll()
 	}
@@ -873,11 +966,41 @@ func (d *Daemon) handlePeerOffline() {
 	d.channelMu.Unlock()
 }
 
-// handleChannelSelect handle browser channel selection
+// checkSecCode returns true if security code is not set or has been verified.
+// Pure atomic reads, no file IO.
+func (d *Daemon) checkSecCode() bool {
+	if atomic.LoadInt32(&d.secCodeEnabled) == 0 {
+		return true
+	}
+	if atomic.LoadInt32(&d.secCodeVerified) == 1 {
+		return true
+	}
+	d.sendJSON(&Message{Type: TypeError, Error: "Security code required"})
+	return false
+}
+
+// handleSecCodeVerify verifies the security code sent by the remote client.
+func (d *Daemon) handleSecCodeVerify(msg *Message) {
+	code := LoadSecurityCode()
+	if code == "" {
+		atomic.StoreInt32(&d.secCodeVerified, 1)
+		d.sendJSON(&Message{Type: TypeSecCodeOK})
+		return
+	}
+	if msg.Data == code {
+		atomic.StoreInt32(&d.secCodeVerified, 1)
+		d.sendJSON(&Message{Type: TypeSecCodeOK})
+	} else {
+		d.sendJSON(&Message{Type: TypeSecCodeError, Error: "Incorrect security code"})
+	}
+}
+
+// handleChannelSelect handle browser channel selection.
+// Subscriptions are NOT cleared here — they are session-level and transport-independent.
+// Local controllers are NOT kicked — channel switch does not affect local attach.
 func (d *Daemon) handleChannelSelect(msg *Message) {
 	channel := msg.Data // "p2p" or "ts"
 	if channel != "p2p" && channel != "ts" {
-		logDebugf(d.logger, "[P2P-DEBUG-DA]", "invalid channel_select: %s", channel)
 		return
 	}
 
@@ -885,18 +1008,29 @@ func (d *Daemon) handleChannelSelect(msg *Message) {
 	d.channelMode = channel
 	d.channelMu.Unlock()
 
-	logDebugf(d.logger, "[P2P-DEBUG-DA]", "channel switched to: %s", channel)
-
 	d.sendJSON(&Message{
 		Type: TypeChannelSelected,
 		Data: channel,
 	})
+
+	// When switching from TS to P2P, drain TS send buffer in background.
+	// TS connection is kept open (not closed) to avoid TurnServer dropping
+	// in-flight data in its internal relay channels.
+	if channel == "p2p" {
+		go func() {
+			d.wsMu.RLock()
+			relay := d.wsRelay
+			d.wsMu.RUnlock()
+			if relay != nil {
+				relay.DrainSendCh()
+			}
+		}()
+	}
 }
 
 // handleFileSendCancel handle frontend request to cancel file send
 func (d *Daemon) handleFileSendCancel(msg *Message) {
 	if d.fileTransfer != nil && msg.FileID > 0 {
-		logPrintf(d.logger, "[daemon]", "received file_send_cancel: file_id=%d", msg.FileID)
 		d.fileTransfer.Cancel(msg.FileID)
 	}
 }
@@ -907,9 +1041,7 @@ func (d *Daemon) handleFileRequest(msg *Message) {
 		return
 	}
 	fileID := msg.FileID
-	logDebugf(d.logger, "[CHAN]", "← RECV type=file_request file_id=%d", fileID)
 	if err := d.fileTransfer.HandleRequest(fileID); err != nil {
-		logErrorf(d.logger, "[daemon]", "file_request failed: %v", err)
 		d.sendJSON(&Message{
 			Type:  TypeError,
 			Error: err.Error(),
@@ -923,7 +1055,6 @@ func (d *Daemon) handleFileDelete(msg *Message) {
 		return
 	}
 	fileID := msg.FileID
-	logDebugf(d.logger, "[CHAN]", "← RECV type=file_delete file_id=%d", fileID)
 	d.fileTransfer.HandleDelete(fileID)
 }
 
@@ -936,100 +1067,92 @@ func (d *Daemon) replenishPool() {
 	}
 	for i := 0; i < deficit; i++ {
 		id := d.ptyMgr.generateID()
-		s, err := d.ptyMgr.Create(id, d.cfg.DefaultShell, d.cfg.DefaultCols, d.cfg.DefaultRows)
+		_, err := d.ptyMgr.Create(id, d.cfg.DefaultShell, d.cfg.DefaultCols, d.cfg.DefaultRows, true)
 		if err != nil {
-			logErrorf(d.logger, "[daemon]", "replenish session failed: %v", err)
 			continue
 		}
-		logPrintf(d.logger, "[daemon]", "pool session %s (pid=%d)", s.ID, s.PID)
 	}
 }
 
-// AttachLocalSession for local WS call: bind local controller to session, kick old client
-func (d *Daemon) AttachLocalSession(sessionID string, ctrl io.Writer) error {
-	attachLog("AttachLocalSession: enter sessionID=%s", sessionID)
+// AttachLocalSession for local WS call: register local controller to session (multi-client, no kick)
+func (d *Daemon) AttachLocalSession(sessionID string, clientID string, ctrl io.WriteCloser) error {
 	session := d.ptyMgr.Get(sessionID)
 	if session == nil {
-		attachLog("AttachLocalSession: session not found: %s", sessionID)
 		return fmt.Errorf("session not found: %s", sessionID)
 	}
 
-	// kick old controller (close its WS connection directly)
-	if session.Controller != nil {
-		attachLog("AttachLocalSession: has old Controller type=%T, closing...", session.Controller)
-		t0 := time.Now()
-		if closer, ok := session.Controller.(io.Closer); ok {
-			closer.Close()
-			attachLog("AttachLocalSession: old Controller closed, took=%dms", time.Since(t0).Milliseconds())
-		} else {
-			attachLog("AttachLocalSession: old Controller is NOT io.Closer (type=%T), skip close", session.Controller)
-		}
-	} else {
-		attachLog("AttachLocalSession: no old Controller")
-	}
-
-	// set new controller
-	session.Controller = ctrl
-	attachLog("AttachLocalSession: new Controller set (type=%T)", ctrl)
-
-	// unsubscribe app from this session, stop app from receiving output
-	d.subMu.Lock()
-	wasSubscribed := d.subscribed[sessionID]
-	delete(d.subscribed, sessionID)
-	d.subMu.Unlock()
-	attachLog("AttachLocalSession: unsubscribed app (wasSubscribed=%v)", wasSubscribed)
-
-	// send kicked notification via app channel
-	attachLog("AttachLocalSession: sending kicked notification...")
-	t0 := time.Now()
-	d.sendJSON(&Message{
-		Type:      TypeKicked,
-		SessionID: sessionID,
-		Data:      "this terminal has been taken over by a local connection",
-	})
-	attachLog("AttachLocalSession: kicked sent, took=%dms", time.Since(t0).Milliseconds())
-
-	attachLog("AttachLocalSession: done OK")
+	// register as additional controller (does NOT kick existing controllers or app)
+	session.AddController(clientID, ctrl)
 	return nil
 }
 
-// DetachLocalSession disconnect local controller
-func (d *Daemon) DetachLocalSession(sessionID string) {
+// DetachLocalSession remove specific local controller by client ID
+func (d *Daemon) DetachLocalSession(sessionID string, clientID string) {
 	session := d.ptyMgr.Get(sessionID)
 	if session != nil {
-		session.Controller = nil
+		session.RemoveController(clientID)
 	}
 }
 
 // CreateSession create new session (for local WS call)
-func (d *Daemon) CreateSession() (*Session, error) {
+func (d *Daemon) CreateSession(shell string) (*Session, error) {
+	if shell == "" {
+		shell = d.cfg.DefaultShell
+	}
 	id := d.ptyMgr.generateID()
-	return d.ptyMgr.Create(id, d.cfg.DefaultShell, d.cfg.DefaultCols, d.cfg.DefaultRows)
+	return d.ptyMgr.Create(id, shell, d.cfg.DefaultCols, d.cfg.DefaultRows, true)
 }
 
 // DestroySession destroy session
 func (d *Daemon) DestroySession(sessionID string) {
 	if s := d.ptyMgr.Get(sessionID); s != nil {
-		if s.Controller != nil {
-			s.Controller = nil
-		}
+		s.CloseAllControllers()
 		d.ptyMgr.Destroy(sessionID)
 	}
 }
 
-// LocalTakeover local takeover: clear local controller, unsubscribe app, notify app kicked
+// SetLogger replace daemon logger (for entry points that create daemon before knowing logger type)
+func (d *Daemon) SetLogger(logger Logger) {
+	d.logger = logger
+}
+
+// GetMaskedAccessKey returns masked accesskey for display (first 8 chars + "...")
+func (d *Daemon) GetMaskedAccessKey() string {
+	if len(d.accessKey) <= 8 {
+		return d.accessKey
+	}
+	return d.accessKey[:8] + "..."
+}
+
+// SetAccessKeyAndConnect validate, save and start remote connection with new accesskey
+func (d *Daemon) SetAccessKeyAndConnect(key string) error {
+	if err := saveAccessKey(key); err != nil {
+		return fmt.Errorf("failed to save accesskey: %w", err)
+	}
+	d.accessKey = key
+	d.StartRemote(key)
+	return nil
+}
+
+// GetConfig returns daemon config (for LocalServer to access)
+func (d *Daemon) GetConfig() *Config {
+	return d.cfg
+}
+
+// LocalTakeover local takeover: clear all local controllers, unsubscribe app, notify app kicked
 func (d *Daemon) LocalTakeover() {
-	// clear all session local controllers (close connections first, then clear references)
+	// close all local controllers for all sessions
 	for _, info := range d.ptyMgr.ListSessions() {
 		if s := d.ptyMgr.Get(info.ID); s != nil {
-			if s.Controller != nil {
-				traceLog("LocalTakeover: closing Controller for session %s", info.ID)
-				if closer, ok := s.Controller.(io.Closer); ok {
-					closer.Close()
-				}
-				s.Controller = nil
-			}
+			s.CloseAllControllers()
 		}
+	}
+
+	// clear client-session mappings in localserver
+	if d.localServer != nil {
+		d.localServer.clientSessionsMu.Lock()
+		d.localServer.clientSessions = make(map[string]map[string]bool)
+		d.localServer.clientSessionsMu.Unlock()
 	}
 
 	// unsubscribe app from all sessions
@@ -1045,19 +1168,16 @@ func (d *Daemon) LocalTakeover() {
 }
 
 // sendOutput send terminal output (with write sequence number, used by frontend for dedup)
-// send to local controller (local attach) first, then to subscribed app
+// broadcast to all local controllers AND also to subscribed app (both paths)
 func (d *Daemon) sendOutput(sessionID, data string, seq uint64) {
-	// 1. send to local controller (if exists)
+	// 1. broadcast to all local controllers
 	session := d.ptyMgr.Get(sessionID)
-	if session != nil && session.Controller != nil {
+	if session != nil {
 		traceHex("DAEMON PTY_READ>>", []byte(data))
-		n, err := session.Controller.Write([]byte(data))
-		if err != nil {
-			attachLog("sendOutput: Controller.Write error: %v (wrote %d/%d bytes, sessionID=%s)", err, n, len(data), sessionID)
-		}
+		session.Broadcast([]byte(data))
 	}
 
-	// 2. send to subscribed app
+	// 2. send to subscribed app (independent of local controllers)
 	d.subMu.RLock()
 	sub := d.subscribed[sessionID]
 	d.subMu.RUnlock()
@@ -1078,11 +1198,6 @@ func (d *Daemon) sendJSON(msg *Message) {
 	mode := d.channelMode
 	d.channelMu.RUnlock()
 
-	ch := mode
-	if ch == "" {
-		ch = "ts(default)"
-	}
-
 	switch mode {
 	case "p2p":
 		d.rtcMu.RLock()
@@ -1090,11 +1205,9 @@ func (d *Daemon) sendJSON(msg *Message) {
 		rtcOK := rtc != nil && rtc.Connected()
 		d.rtcMu.RUnlock()
 		if rtcOK {
-			logDebugf(d.logger, "[CHAN]", "→ SEND via=%s type=%s session=%s", ch, msg.Type, msg.SessionID)
 			rtc.SendJSON(msg)
 			return
 		}
-		logDebugf(d.logger, "[CHAN]", "→ SEND via=%s type=%s DROPPED (rtc not connected)", ch, msg.Type)
 		return
 
 	case "ts":
@@ -1102,18 +1215,15 @@ func (d *Daemon) sendJSON(msg *Message) {
 		relay := d.wsRelay
 		d.wsMu.RUnlock()
 		if relay != nil && relay.Connected() {
-			logDebugf(d.logger, "[CHAN]", "→ SEND via=%s type=%s session=%s", ch, msg.Type, msg.SessionID)
 			relay.SendJSON(msg)
 			return
 		}
-		logPrintf(d.logger, "[daemon]", "TS channel is down, cannot send %s", msg.Type)
 
 	default:
 		d.wsMu.RLock()
 		relay := d.wsRelay
 		d.wsMu.RUnlock()
 		if relay != nil && relay.Connected() {
-			logDebugf(d.logger, "[CHAN]", "→ SEND via=%s type=%s session=%s", ch, msg.Type, msg.SessionID)
 			relay.SendJSON(msg)
 		}
 	}
@@ -1122,7 +1232,6 @@ func (d *Daemon) sendJSON(msg *Message) {
 // sendBytes send binary data via current selected channel
 func (d *Daemon) sendBytes(data []byte) {
 	if len(data) > 32*1024 {
-		logPrintf(d.logger, "[daemon]", "WARNING: sendBytes frame too large: %d bytes", len(data))
 	}
 	d.channelMu.RLock()
 	mode := d.channelMode
@@ -1148,7 +1257,6 @@ func (d *Daemon) sendBytes(data []byte) {
 			relay.SendBinary(data)
 			return
 		}
-		logPrintf(d.logger, "[daemon]", "TS channel is down, cannot send binary data")
 
 	default:
 		d.wsMu.RLock()
@@ -1191,7 +1299,6 @@ func (d *Daemon) sendBytesWithBackpressure(data []byte, threshold uint64) {
 // sendBytesCancelable blocking send with cancel (for file transfer, returns immediately when cancel is closed)
 func (d *Daemon) sendBytesCancelable(data []byte, threshold uint64, cancel <-chan struct{}) bool {
 	if len(data) > 32*1024 {
-		logPrintf(d.logger, "[daemon]", "WARNING: sendBytesCancelable frame too large: %d bytes", len(data))
 	}
 	d.channelMu.RLock()
 	mode := d.channelMode
@@ -1273,14 +1380,11 @@ func (d *Daemon) startIPCServer() {
 
 		go func() {
 			if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
-				logErrorf(d.logger, "[daemon]", "IPC HTTP error: %v", err)
 			}
 		}()
 
-		logPrintf(d.logger, "[daemon]", "IPC HTTP listening on %s", addr)
 		return
 	}
 
-	logPrintf(d.logger, "[daemon]", "IPC HTTP: all ports %d-%d in use, skipping", portMin, portMax)
 }
 

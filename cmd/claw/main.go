@@ -16,54 +16,6 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-func main() {
-	// prevent running inside daemon PTY (e.g. app terminal)
-	if os.Getenv("IS_CLIANYWHERE_PTY") == "1" && os.Getenv("CLIANYWHERE_DAEMONIZED") != "1" {
-		fmt.Fprintln(os.Stderr, "Error: cannot run claw inside CliAnyWhere terminal")
-		os.Exit(1)
-	}
-
-	// daemonized subprocess entry: skip interaction, load cached key directly
-	if os.Getenv("CLIANYWHERE_DAEMONIZED") == "1" {
-		os.Unsetenv("CLIANYWHERE_DAEMONIZED")
-		runDaemonized()
-		return
-	}
-
-	logger := createLogger()
-
-	if len(os.Args) >= 2 {
-		switch os.Args[1] {
-		case "send":
-			handleSend()
-			return
-		case "version":
-			ensureConsole()
-			fmt.Println("daemon_go v0.2.0")
-			return
-		case "attach":
-			ensureConsole()
-			runAttachCLI()
-			return
-		case "status":
-			ensureConsole()
-			handleStatus()
-			return
-		case "stop":
-			ensureConsole()
-			handleStop()
-			return
-		default:
-			ensureConsole()
-			fmt.Printf("'%s' is not supported yet\n", os.Args[1])
-			os.Exit(1)
-		}
-	}
-
-	// no args: dispatch to CLI or GUI normal startup entry
-	runApp(logger)
-}
-
 // handleSend handle send subcommand (shared CLI/GUI, pure CLI operation)
 func handleSend() {
 	args := os.Args[2:]
@@ -124,6 +76,31 @@ func queryDaemonStatus() (state string, ok bool) {
 	return msg.Data, true
 }
 
+// sendSetAccessKeyViaWS sends set_accesskey command to daemon via WS
+func sendSetAccessKeyViaWS(port int, key string) {
+	url := fmt.Sprintf("ws://127.0.0.1:%d", port)
+	dialer := websocket.Dialer{HandshakeTimeout: 3 * time.Second}
+	conn, _, err := dialer.Dial(url, nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to connect to daemon: %v\n", err)
+		return
+	}
+	defer conn.Close()
+
+	conn.WriteJSON(Message{Type: TypeSetAccessKey, AccessKey: key})
+	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+
+	var msg Message
+	if err := conn.ReadJSON(&msg); err != nil {
+		return
+	}
+	if msg.Success {
+		fmt.Println("[ts] AccessKey updated and connecting...")
+	} else {
+		fmt.Printf("[ts] Failed: %s\n", msg.Data)
+	}
+}
+
 // handleStatus query current daemon run status
 func handleStatus() {
 	state, ok := queryDaemonStatus()
@@ -166,25 +143,6 @@ func handleStop() {
 	fmt.Println("stopped")
 }
 
-// runDaemonized daemonized subprocess entry: uses FileLogger, loads cached key to run
-func runDaemonized() {
-	logger := newFileLogger()
-	cfg := DefaultConfig()
-
-	d := NewDaemon("", cfg, logger)
-	d.Init()
-
-	accessKey, err := loadAccessKey()
-	if err != nil {
-		fatalExit("failed to read accesskey: %v", err)
-	}
-	if accessKey != "" {
-		d.StartRemote(accessKey)
-	}
-
-	waitForSignal(d, logger)
-}
-
 // waitForSignal wait for SIGINT/SIGTERM then destroy daemon
 func waitForSignal(d *Daemon, logger Logger) {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -194,11 +152,11 @@ func waitForSignal(d *Daemon, logger Logger) {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigCh
-		logPrintf(logger, "[daemon]", "shutting down...")
 		cancel()
 	}()
 
 	<-ctx.Done()
+	logger.Infof("daemon shutting down...")
 	d.Destroy()
-	logPrintf(logger, "[daemon]", "exited")
+	logger.Infof("daemon stopped")
 }

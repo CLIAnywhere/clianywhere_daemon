@@ -5,12 +5,31 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
 )
+
+// LoginError login failure error (should not reconnect)
+type LoginError struct {
+	Msg string
+}
+
+func (e *LoginError) Error() string {
+	return e.Msg
+}
+
+// IPBlockedError IP is temporarily blocked by TurnServer (retry with long backoff)
+type IPBlockedError struct {
+	Msg string
+}
+
+func (e *IPBlockedError) Error() string {
+	return e.Msg
+}
 
 // relayMsg forwarded message with message type
 type relayMsg struct {
@@ -52,7 +71,6 @@ func NewWSTurnRelay(accessKey string, cfg *Config, logger Logger) *WSTurnRelay {
 
 // Connect connect directly to TurnServer WebSocket, send login, block until login_ok or timeout
 func (w *WSTurnRelay) Connect(url string) error {
-	logPrintf(w.logger, "[wsrelay]", "connecting %s ...", url)
 
 	dialer := websocket.Dialer{
 		HandshakeTimeout: 10 * time.Second,
@@ -100,14 +118,29 @@ func (w *WSTurnRelay) Connect(url string) error {
 		return fmt.Errorf("parse login response failed: %w", err)
 	}
 
+	// Only invalid accesskey is fatal (daemon stops reconnecting).
+	// Everything else (register_error, IP-blocked, malformed login,
+	// future unknown error types) is treated as transient so the daemon
+	// retries with its usual backoff.
 	if resp["type"] == "login_error" {
+		msg, _ := resp["msg"].(string)
+		if msg == "invalid accesskey" {
+			conn.Close()
+			return &LoginError{Msg: fmt.Sprintf("login failed: %v", resp["msg"])}
+		}
+		// IP blocked by TurnServer (same-day ban, resets next day):
+		// caller uses a long backoff to avoid wasteful polling.
+		if strings.HasPrefix(msg, "IP blocked") {
+			conn.Close()
+			return &IPBlockedError{Msg: fmt.Sprintf("login rejected: %v", resp["msg"])}
+		}
 		conn.Close()
-		return fmt.Errorf("login failed: %v", resp["msg"])
+		return fmt.Errorf("login rejected (will retry): %v", resp["msg"])
 	}
 
 	if resp["type"] != "login_ok" {
 		conn.Close()
-		return fmt.Errorf("unexpected response: %s", string(message))
+		return fmt.Errorf("unexpected response (will retry): %s", string(message))
 	}
 
 	w.mu.Lock()
@@ -115,7 +148,6 @@ func (w *WSTurnRelay) Connect(url string) error {
 	w.connected = true
 	w.mu.Unlock()
 
-	logPrintf(w.logger, "[wsrelay]", "connected and logged in")
 	atomic.StoreInt32(&w.missedPongs, 0)
 
 	// start read/write goroutines
@@ -151,7 +183,6 @@ func (w *WSTurnRelay) SendBinaryBlocking(data []byte) {
 	select {
 	case w.binaryCh <- relayMsg{data: data, msgType: websocket.BinaryMessage}:
 	case <-w.closeCh:
-		logPrintf(w.logger, "[wsrelay]", "SendBinaryBlocking: connection closed, discarding %d bytes", len(data))
 	}
 }
 
@@ -171,7 +202,6 @@ func (w *WSTurnRelay) SendBinaryCancelable(data []byte, cancel <-chan struct{}) 
 	case <-w.closeCh:
 		return false
 	case <-cancel:
-		logPrintf(w.logger, "[wsrelay]", "SendBinaryCancelable: cancelled, discarding %d bytes", len(data))
 		return false
 	}
 }
@@ -214,6 +244,22 @@ func (w *WSTurnRelay) Done() <-chan struct{} {
 	return w.closeCh
 }
 
+// DrainSendCh wait until sendCh and binaryCh are both empty. Blocking.
+// Used when switching from TS to P2P: drain all buffered text/binary messages
+// before the caller decides what to do with the TS connection.
+func (w *WSTurnRelay) DrainSendCh() {
+	for {
+		w.mu.RLock()
+		sendLen := len(w.sendCh)
+		binaryLen := len(w.binaryCh)
+		w.mu.RUnlock()
+		if sendLen == 0 && binaryLen == 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // Connected return whether connected
 func (w *WSTurnRelay) Connected() bool {
 	w.mu.RLock()
@@ -238,7 +284,6 @@ func (w *WSTurnRelay) readLoop() {
 
 		msgType, message, err := w.conn.ReadMessage()
 		if err != nil {
-			logPrintf(w.logger, "[wsrelay]", "read failed: %v", err)
 			return
 		}
 
@@ -260,7 +305,6 @@ func (w *WSTurnRelay) readLoop() {
 
 		switch peek.Type {
 		case "pong":
-			logDebugf(w.logger, "[wsrelay]", "← pong (was_missed=%d)", atomic.LoadInt32(&w.missedPongs))
 			atomic.StoreInt32(&w.missedPongs, 0)
 			continue
 		case "p2p_offer", "p2p_answer", "p2p_ice", "peer_online", "peer_offline":
@@ -334,7 +378,6 @@ func (w *WSTurnRelay) pingLoop() {
 		case <-ticker.C:
 			missed := atomic.LoadInt32(&w.missedPongs)
 			if missed >= 3 {
-				logPrintf(w.logger, "[wsrelay]", "%d consecutive pings without pong reply, disconnecting and reconnecting", missed)
 				w.Close()
 				return
 			}
@@ -350,7 +393,6 @@ func (w *WSTurnRelay) pingLoop() {
 
 			atomic.AddInt32(&w.missedPongs, 1)
 			pingMsg, _ := json.Marshal(map[string]any{"type": "ping"})
-			logDebugf(w.logger, "[wsrelay]", "→ ping (missed=%d)", missed+1)
 			select {
 			case w.sendCh <- relayMsg{data: pingMsg, msgType: websocket.TextMessage}:
 			case <-w.closeCh:

@@ -24,13 +24,17 @@ func (p *windowsPty) Wait() error {
 	return err
 }
 
-func startPty(shellPath, dir string, cols, rows int) (ptyConn, int, error) {
+func startPty(shellPath, dir string, cols, rows int, loginShell bool) (ptyConn, int, error) {
 	var opts []conpty.ConPtyOption
 	opts = append(opts, conpty.ConPtyDimensions(cols, rows))
 	if dir != "" {
 		opts = append(opts, conpty.ConPtyWorkDir(dir))
 	}
-	opts = append(opts, conpty.ConPtyEnv(append(os.Environ(), "TERM=xterm-256color", "IS_CLIANYWHERE_PTY=1")))
+	opts = append(opts, conpty.ConPtyEnv(append(os.Environ(),
+		"TERM=xterm-256color",
+		"COLORTERM=truecolor",
+		"IS_CLIANYWHERE_PTY=1",
+	)))
 
 	cpty, err := conpty.Start(shellPath, opts...)
 	if err != nil {

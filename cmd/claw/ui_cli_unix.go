@@ -1,12 +1,10 @@
-//go:build !windows
+//go:build cli && !windows
 
 package main
 
-import (
-	"fmt"
+import "fmt"
 
-	qrcode "github.com/skip2/go-qrcode"
-)
-
-// showQRImage is only used on Windows; no-op stub for Unix
-func showQRImage(qr *qrcode.QRCode) error { return fmt.Errorf("not implemented") }
+// qrBindModeUI Unix stub: falls back to terminal-based binding
+func qrBindModeUI(cfg *Config) (string, error) {
+	return "", fmt.Errorf("GUI binding not supported on this platform, use terminal mode")
+}

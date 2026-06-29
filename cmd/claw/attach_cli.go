@@ -1,4 +1,6 @@
 
+//go:build cli
+
 package main
 
 import (
@@ -13,7 +15,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	xterm "github.com/CLIAnywhere/xterm-go"
+	xterm "github.com/CLIAnywhere/daemon/internal/xterm"
 
 	"golang.org/x/term"
 )
@@ -82,11 +84,13 @@ func selectSession(conn *websocket.Conn) (string, string) {
 
 	// receive response
 	var sessions []SessionInfo
+	var availShells []ShellInfo
 	_, msgBytes, err := conn.ReadMessage()
 	if err == nil {
 		var msg Message
 		if json.Unmarshal(msgBytes, &msg) == nil {
 			sessions = msg.SessionInfos
+			availShells = msg.Shells
 		}
 	}
 
@@ -99,14 +103,65 @@ func selectSession(conn *websocket.Conn) (string, string) {
 	defer term.Restore(int(os.Stdin.Fd()), oldState)
 
 	selected := 0
-	maxIdx := len(sessions) // +1 because last item is "Add new shell"
+	maxIdx := len(sessions) // +0 New shell
+	// submenu state for shell selection
+	shellMenuOpen := false
+	shellSelected := 0
 
 	for {
-		drawMenu(sessions, selected)
+		if shellMenuOpen {
+			drawShellMenu(availShells, shellSelected)
+		} else {
+			drawMenu(sessions, selected)
+		}
 
 		buf := make([]byte, 3)
 		n, _ := os.Stdin.Read(buf)
 
+		if shellMenuOpen {
+			// shell selection submenu
+			if n == 1 {
+				switch buf[0] {
+				case 'q', 0x03:
+					shellMenuOpen = false
+				case 'j', 0x0A:
+					shellSelected++
+					if shellSelected >= len(availShells) {
+						shellSelected = 0
+					}
+				case 'k':
+					shellSelected--
+					if shellSelected < 0 {
+						shellSelected = len(availShells) - 1
+					}
+				case 0x1B: // Escape → back to main menu
+					shellMenuOpen = false
+				case 0x0D: // Enter → create session with selected shell
+					shell := availShells[shellSelected].Name
+					id := addNewShell(conn, shell)
+					if id != "" {
+						return id, "Shell"
+					}
+					shellMenuOpen = false // creation failed, back to main menu
+				}
+			} else if n == 3 && buf[0] == 0x1B && buf[1] == '[' {
+				switch buf[2] {
+				case 'A':
+					shellSelected--
+					if shellSelected < 0 {
+						shellSelected = len(availShells) - 1
+					}
+				case 'B':
+					shellSelected++
+					if shellSelected >= len(availShells) {
+						shellSelected = 0
+					}
+				}
+			}
+			continue
+		}
+
+		// main menu
 		if n == 1 {
 			switch buf[0] {
 			case 'q', 0x03: // q or Ctrl+C → exit
@@ -122,13 +177,18 @@ func selectSession(conn *websocket.Conn) (string, string) {
 					selected = maxIdx
 				}
 			case 0x0D: // Enter → confirm selection
-				if selected == maxIdx {
-					// Add new shell
-					id := addNewShell(conn)
-					if id != "" {
-						return id, "Shell"
+				if selected == len(sessions) {
+					// + New shell → open shell selection submenu
+					if len(availShells) == 1 {
+						// only one shell, create directly
+						id := addNewShell(conn, availShells[0].Name)
+						if id != "" {
+							return id, "Shell"
+						}
+					} else if len(availShells) > 1 {
+						shellMenuOpen = true
+						shellSelected = 0
 					}
-					// creation failed, back to menu
 				} else if selected < len(sessions) {
 					return sessions[selected].ID, sessions[selected].Name
 				}
@@ -172,14 +232,33 @@ func drawMenu(sessions []SessionInfo, selected int) {
 	if selected == len(sessions) {
 		prefix = " \033[7m> "
 	}
-	fmt.Printf("%s+ Add new shell\033[0m\r\n", prefix)
+	fmt.Printf("%s+ New shell\033[0m\r\n", prefix)
+
 	fmt.Print("═══════════════════════════════════\r\n")
 	fmt.Print("\033[2m" + menuHint + "\033[0m\r\n")
 }
 
-// addNewShell request daemon to create new session
-func addNewShell(conn *websocket.Conn) string {
-	conn.WriteJSON(Message{Type: TypeCreateSession})
+// drawShellMenu draw shell type selection submenu
+func drawShellMenu(shells []ShellInfo, selected int) {
+	fmt.Print("\033[H\033[2J")
+	fmt.Print("\033[1;36m=== Select Shell ===\033[0m\r\n")
+	fmt.Print("═══════════════════════════════════\r\n")
+
+	for i, s := range shells {
+		prefix := "  "
+		if i == selected {
+			prefix = " \033[7m> "
+		}
+		fmt.Printf("%s%-12s %s\033[0m\r\n", prefix, s.Name, s.Path)
+	}
+
+	fmt.Print("═══════════════════════════════════\r\n")
+	fmt.Print("\033[2mESC:back  ↑↓:select  Enter:confirm\033[0m\r\n")
+}
+
+// addNewShell request daemon to create new session with specified shell
+func addNewShell(conn *websocket.Conn, shell string) string {
+	conn.WriteJSON(Message{Type: TypeCreateSession, Shell: shell})
 
 	// read response
 	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
@@ -202,6 +281,7 @@ func addNewShell(conn *websocket.Conn) string {
 	return ""
 }
 
+
 // ============================================================
 // Attach to session — raw terminal passthrough mode
 // ============================================================
@@ -209,7 +289,6 @@ func addNewShell(conn *websocket.Conn) string {
 // attachToSession connect to specified session, enter raw terminal passthrough mode
 // return true means kicked (caller should exit), false means intentional detach
 func attachToSession(conn *websocket.Conn, sessionID string, sessionName string) bool {
-	attachLog("attachToSession: enter, sessionID=%s sessionName=%s", sessionID, sessionName)
 
 	// enter raw mode early, prevent Ctrl+C from killing process during WS handshake
 	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
@@ -218,37 +297,26 @@ func attachToSession(conn *websocket.Conn, sessionID string, sessionName string)
 	}
 
 	// send attach request
-	attachLog("attachToSession: sending TypeAttach")
-	t0 := time.Now()
 	conn.WriteJSON(Message{Type: TypeAttach, SessionID: sessionID})
-	attachLog("attachToSession: TypeAttach sent, took=%dms", time.Since(t0).Milliseconds())
 
 	// wait for attach_ok
 	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
-	attachLog("attachToSession: waiting for response (10s deadline)")
 	for {
-		readT0 := time.Now()
 		_, msgBytes, err := conn.ReadMessage()
-		readTook := time.Since(readT0).Milliseconds()
 		if err != nil {
-			attachLog("attachToSession: ReadMessage error after %dms: %v (total wait=%dms)", readTook, err, time.Since(t0).Milliseconds())
 			fmt.Printf("\r\nError: attach failed: %v\r\n", err)
 			return false
 		}
 
 		var msg Message
 		if json.Unmarshal(msgBytes, &msg) != nil {
-			attachLog("attachToSession: unmarshal failed, raw=%s", string(msgBytes[:min(len(msgBytes), 200)]))
 			continue
 		}
-
-		attachLog("attachToSession: received msg type=%s sessionID=%s after %dms (total=%dms)", msg.Type, msg.SessionID, readTook, time.Since(t0).Milliseconds())
 
 		switch msg.Type {
 		case TypeAttachOK:
 			// enter passthrough mode after success (rawTerminalPassthrough will MakeRaw again, restore then set)
 			conn.SetReadDeadline(time.Time{})
-			attachLog("attachToSession: attach_ok received, total wait=%dms, entering rawTerminalPassthrough", time.Since(t0).Milliseconds())
 			if rawTerminalPassthrough(conn, sessionID, sessionName) {
 				fmt.Print("\r\nkicked\r\n")
 				return true
@@ -256,17 +324,14 @@ func attachToSession(conn *websocket.Conn, sessionID string, sessionName string)
 			return false
 
 		case TypeError:
-			attachLog("attachToSession: server error: %s", msg.Error)
 			fmt.Printf("\r\nError: %s\r\n", msg.Error)
 			return false
 
 		case TypeHistoryData:
 			// may receive history data before attach_ok, output directly
-			attachLog("attachToSession: received history_data len=%d before attach_ok", len(msg.Data))
 			os.Stdout.Write([]byte(msg.Data))
 
 		default:
-			attachLog("attachToSession: unexpected msg type=%s", msg.Type)
 		}
 	}
 }
@@ -455,6 +520,8 @@ func rawTerminalPassthrough(conn *websocket.Conn, sessionID string, sessionName 
 		if allDirty {
 			// ═══ full render: status bar + all rows ═══
 			sb.Grow((nRows + 1) * (nCols*2 + 32))
+			// disable auto-wrap: prevent terminal scroll when writing nCols chars on last row
+			sb.WriteString("\033[?7l")
 			// cursor home to first row
 			sb.Write([]byte{'\033', '[', 'H'})
 
@@ -465,7 +532,7 @@ func rawTerminalPassthrough(conn *websocket.Conn, sessionID string, sessionName 
 				statusText = " " + sessionName + " CMD | ↑↓:scroll K:back other:resume "
 			} else {
 				sb.WriteString("\033[48;2;0;135;68m\033[38;2;255;255;255m")
-				statusText = " " + sessionName + " | Ctrl+J:command "
+				statusText = " " + sessionName + " | Ctrl+J:Enter Command Mode "
 			}
 			sb.WriteString(statusText)
 			if pad := nCols - len(statusText); pad > 0 {
@@ -513,6 +580,7 @@ func rawTerminalPassthrough(conn *websocket.Conn, sessionID string, sessionName 
 		} else {
 			// ═══ incremental render: only render dirty rows ═══
 			sb.Grow(nCols*2 + 64) // at least one line
+			sb.WriteString("\033[?7l")
 			lastFg := uint32(0)
 			lastBg := uint32(0)
 
@@ -565,34 +633,42 @@ func rawTerminalPassthrough(conn *websocket.Conn, sessionID string, sessionName 
 			cy := localTerm.CursorY()
 			cx := localTerm.CursorX()
 
-			// clear old cursor ghost: when cursor moves to different row, redraw the old cell position
-			if prevCursorY >= 0 && (prevCursorY != cy || prevCursorX != cx) && prevCursorY < nRows && !allDirty {
-				oldLine := buf.Lines.Get(buf.YDisp + prevCursorY)
-				if oldLine != nil && prevCursorX < oldLine.Len && prevCursorX < nCols {
-					oldCell := xterm.NewCellData()
-					oldLine.LoadCell(prevCursorX, oldCell)
-					sb.WriteString(fmt.Sprintf("\033[%d;%dH", prevCursorY+2, prevCursorX+1))
-					sb.WriteString(sgrCode(oldCell))
-					ch := oldCell.GetChars()
-					if ch == "" {
-						ch = " "
-					}
-					sb.WriteString(ch)
-				}
-			}
-
-			// current cursor row dirty or full render → draw cursor
-			if allDirty || (cy < len(dirtySet) && dirtySet[cy]) {
+			if useSystemCursor {
+				// system cursor mode: just position the native terminal cursor,
+				// terminal handles blinking natively — no custom rendering needed
 				sb.WriteString(fmt.Sprintf("\033[%d;%dH", cy+2, cx+1))
-				if time.Now().UnixMilli()/500%2 == 0 {
-					sb.WriteString("\033[48;2;255;255;255m\033[38;2;0;0;0m \033[0m")
-					sb.WriteString(fmt.Sprintf("\033[%d;%dH", cy+2, cx+1))
+			} else {
+				// clear old cursor ghost: when cursor moves to different row, redraw the old cell position
+				if prevCursorY >= 0 && (prevCursorY != cy || prevCursorX != cx) && prevCursorY < nRows && !allDirty {
+					oldLine := buf.Lines.Get(buf.YDisp + prevCursorY)
+					if oldLine != nil && prevCursorX < oldLine.Len && prevCursorX < nCols {
+						oldCell := xterm.NewCellData()
+						oldLine.LoadCell(prevCursorX, oldCell)
+						sb.WriteString(fmt.Sprintf("\033[%d;%dH", prevCursorY+2, prevCursorX+1))
+						sb.WriteString(sgrCode(oldCell))
+						ch := oldCell.GetChars()
+						if ch == "" {
+							ch = " "
+						}
+						sb.WriteString(ch)
+					}
 				}
+
+				// current cursor row dirty or full render → draw cursor
+				if allDirty || (cy < len(dirtySet) && dirtySet[cy]) {
+					sb.WriteString(fmt.Sprintf("\033[%d;%dH", cy+2, cx+1))
+					if time.Now().UnixMilli()/500%2 == 0 {
+						sb.WriteString("\033[48;2;255;255;255m\033[38;2;0;0;0m \033[0m")
+						sb.WriteString(fmt.Sprintf("\033[%d;%dH", cy+2, cx+1))
+					}
+				}
+				prevCursorY = cy
+				prevCursorX = cx
 			}
-			prevCursorY = cy
-			prevCursorX = cx
 		}
 
+		// restore auto-wrap
+		sb.WriteString("\033[?7h")
 		termMu.Unlock()
 		if sb.Len() > 0 {
 			_took := time.Since(_renderT0).Milliseconds()
@@ -659,13 +735,15 @@ func rawTerminalPassthrough(conn *websocket.Conn, sessionID string, sessionName 
 		for {
 			select {
 			case <-blinkTick.C:
-				// cursor blink → mark cursor row dirty
-				cy := func() int {
-					termMu.Lock()
-					defer termMu.Unlock()
-					return localTerm.CursorY()
-				}()
-				sendRender(renderSignal{rowStart: cy, rowEnd: cy + 1})
+				if !useSystemCursor {
+					// cursor blink → mark cursor row dirty
+					cy := func() int {
+						termMu.Lock()
+						defer termMu.Unlock()
+						return localTerm.CursorY()
+					}()
+					sendRender(renderSignal{rowStart: cy, rowEnd: cy + 1})
+				}
 			case sig := <-renderCh:
 				// initialize with first signal + overflow flag
 				allDirty := sig.allDirty || renderOverflow.Swap(false)
@@ -923,6 +1001,7 @@ func rawTerminalPassthrough(conn *websocket.Conn, sessionID string, sessionName 
 					continue
 				}
 
+
 					// DECCKM translation: when program enables Application Cursor Keys (ESC[?1h),
 					// it expects ESC O A/B/C/D for arrow keys instead of ESC [ A/B/C/D.
 					// The user's terminal always sends normal-mode sequences (ESC [ X),
@@ -946,7 +1025,7 @@ func rawTerminalPassthrough(conn *websocket.Conn, sessionID string, sessionName 
 				// if scrolling, any input resets to bottom
 				if localTerm.Buffer().YDisp < localTerm.Buffer().YBase {
 					termMu.Lock()
-					localTerm.ScrollToBottom()
+					localTerm.ScrollReset()
 					termMu.Unlock()
 					sendRender(renderSignal{allDirty: true})
 				}

@@ -10,14 +10,18 @@ import (
 
 var (
 	kernel32               = syscall.NewLazyDLL("kernel32.dll")
+	user32dll              = syscall.NewLazyDLL("user32.dll")
 	procAllocConsole       = kernel32.NewProc("AllocConsole")
 	procFreeConsole        = kernel32.NewProc("FreeConsole")
+	procGetConsoleWindow   = kernel32.NewProc("GetConsoleWindow")
 	procSetStdHandle       = kernel32.NewProc("SetStdHandle")
 	procGetStdHandle       = kernel32.NewProc("GetStdHandle")
 	procGetConsoleMode     = kernel32.NewProc("GetConsoleMode")
 	procSetConsoleMode     = kernel32.NewProc("SetConsoleMode")
 	procSetConsoleOutputCP = kernel32.NewProc("SetConsoleOutputCP")
 	procSetConsoleCP       = kernel32.NewProc("SetConsoleCP")
+	procSetForegroundWin   = user32dll.NewProc("SetForegroundWindow")
+	procShowWindow         = user32dll.NewProc("ShowWindow")
 )
 
 const (
@@ -47,6 +51,12 @@ func ensureConsole() {
 	enableVTermOnConsole()
 	setConsoleUTF8()
 	consoleAllocated = true
+
+	// bring console window to foreground
+	if hwnd, _, _ := procGetConsoleWindow.Call(); hwnd != 0 {
+		procShowWindow.Call(hwnd, 9) // SW_RESTORE
+		procSetForegroundWin.Call(hwnd)
+	}
 }
 
 // releaseConsole close the console window we created

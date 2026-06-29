@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"sync"
 	"time"
 )
@@ -46,43 +45,6 @@ func traceLog(format string, args ...interface{}) {
 	fmt.Fprintf(f, "[%s] ", time.Now().Format("15:04:05.000000"))
 	fmt.Fprintf(f, format, args...)
 	fmt.Fprintf(f, "\n")
-}
-
-// attachLog writes attach-specific diagnostics to ~/.clianywhere/attach.log
-var (
-	attachLogFile *os.File
-	attachLogOnce sync.Once
-	attachLogMu   sync.Mutex
-)
-
-func attachLog(format string, args ...interface{}) {
-	attachLogOnce.Do(func() {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			fatalExit("failed to get HOME directory: %v", err)
-		}
-		dir := filepath.Join(home, ".clianywhere")
-		if err := os.MkdirAll(dir, 0700); err != nil {
-			fatalExit("failed to create %s directory: %v", dir, err)
-		}
-		path := filepath.Join(dir, "attach.log")
-		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
-		if err != nil {
-			fatalExit("failed to open attach log file %s: %v", path, err)
-		}
-		attachLogFile = f
-		fmt.Fprintf(f, "\n=== attach_log opened pid=%d %s ===\n", os.Getpid(), time.Now().Format(time.RFC3339))
-		f.Sync()
-	})
-	if attachLogFile == nil {
-		return
-	}
-	attachLogMu.Lock()
-	defer attachLogMu.Unlock()
-	fmt.Fprintf(attachLogFile, "[%s] [%d] ", time.Now().Format("15:04:05.000000"), os.Getpid())
-	fmt.Fprintf(attachLogFile, format, args...)
-	fmt.Fprintf(attachLogFile, "\n")
-	attachLogFile.Sync()
 }
 
 func traceHex(prefix string, data []byte) {
