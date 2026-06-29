@@ -40,35 +40,35 @@ jobs:
             goos: windows
             goarch: amd64
             tags: web
-            bin: claw-web.exe
+            bin: claw.exe
             ldflags: "-H windowsgui"
             archive: claw-web-windows-amd64.zip
           - target: web-darwin-amd64
             goos: darwin
             goarch: amd64
             tags: web
-            bin: claw-web
+            bin: claw
             ldflags: ""
             archive: claw-web-macos-amd64.zip
           - target: web-darwin-arm64
             goos: darwin
             goarch: arm64
             tags: web
-            bin: claw-web
+            bin: claw
             ldflags: ""
             archive: claw-web-macos-arm64.zip
           - target: web-linux-amd64
             goos: linux
             goarch: amd64
             tags: web
-            bin: claw-web
+            bin: claw
             ldflags: ""
             archive: claw-web-linux-amd64.zip
           - target: cli-linux-amd64
             goos: linux
             goarch: amd64
             tags: cli
-            bin: claw-cli
+            bin: claw
             ldflags: ""
             archive: claw-cli-linux-amd64.zip
 
