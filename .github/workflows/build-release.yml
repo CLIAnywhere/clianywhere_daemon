@@ -6,8 +6,8 @@ name: Build Release
 #   claw-windows.zip             (Windows GUI, -H windowsgui)
 #   claw-macos-amd64.zip         (macOS Intel)
 #   claw-macos-arm64.zip         (macOS Apple Silicon)
-#   claw-desktop-amd64.zip       (Linux web)
-#   claw-cli-amd64.zip           (Linux CLI)
+#   claw-linux-desktop-amd64.zip (Linux web)
+#   claw-linux-cli-amd64.zip     (Linux CLI)
 
 on:
   workflow_dispatch:
@@ -63,14 +63,14 @@ jobs:
             tags: web
             bin: claw
             ldflags: ""
-            archive: claw-desktop-amd64.zip
+            archive: claw-linux-desktop-amd64.zip
           - target: cli-linux-amd64
             goos: linux
             goarch: amd64
             tags: cli
             bin: claw
             ldflags: ""
-            archive: claw-cli-amd64.zip
+            archive: claw-linux-cli-amd64.zip
 
     steps:
       - name: Checkout
