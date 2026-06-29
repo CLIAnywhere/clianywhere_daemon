@@ -5,7 +5,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	xterm "github.com/CLIAnywhere/daemon/internal/xterm"
+	xterm "github.com/CLIAnywhere/pc_daemon/internal/xterm"
 )
 
 // Terminal wraps xterm-go, maintains terminal state and scrollback

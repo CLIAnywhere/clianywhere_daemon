@@ -9,7 +9,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 
-	xterm "github.com/CLIAnywhere/daemon/internal/xterm"
+	xterm "github.com/CLIAnywhere/pc_daemon/internal/xterm"
 )
 
 // goldenTestCase matches the JSON structure produced by conformance/generate.mjs.

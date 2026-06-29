@@ -1,4 +1,4 @@
-module github.com/CLIAnywhere/daemon
+module github.com/CLIAnywhere/pc_daemon
 
 go 1.25
 
