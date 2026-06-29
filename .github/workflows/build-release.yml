@@ -3,11 +3,11 @@ name: Build Release
 # Manually triggered: build web/cli binaries for each platform, zip them,
 # and publish to a GitHub Release.
 # Artifacts:
-#   claw-web-windows-amd64.zip   (Windows GUI, -H windowsgui)
-#   claw-web-macos-amd64.zip     (macOS Intel)
-#   claw-web-macos-arm64.zip     (macOS Apple Silicon)
-#   claw-web-linux-amd64.zip     (Linux)
-#   claw-cli-linux-amd64.zip     (Linux CLI)
+#   claw-windows.zip             (Windows GUI, -H windowsgui)
+#   claw-macos-amd64.zip         (macOS Intel)
+#   claw-macos-arm64.zip         (macOS Apple Silicon)
+#   claw-desktop-amd64.zip       (Linux web)
+#   claw-cli-amd64.zip           (Linux CLI)
 
 on:
   workflow_dispatch:
@@ -42,35 +42,35 @@ jobs:
             tags: web
             bin: claw.exe
             ldflags: "-H windowsgui"
-            archive: claw-web-windows-amd64.zip
+            archive: claw-windows.zip
           - target: web-darwin-amd64
             goos: darwin
             goarch: amd64
             tags: web
             bin: claw
             ldflags: ""
-            archive: claw-web-macos-amd64.zip
+            archive: claw-macos-amd64.zip
           - target: web-darwin-arm64
             goos: darwin
             goarch: arm64
             tags: web
             bin: claw
             ldflags: ""
-            archive: claw-web-macos-arm64.zip
+            archive: claw-macos-arm64.zip
           - target: web-linux-amd64
             goos: linux
             goarch: amd64
             tags: web
             bin: claw
             ldflags: ""
-            archive: claw-web-linux-amd64.zip
+            archive: claw-desktop-amd64.zip
           - target: cli-linux-amd64
             goos: linux
             goarch: amd64
             tags: cli
             bin: claw
             ldflags: ""
-            archive: claw-cli-linux-amd64.zip
+            archive: claw-cli-amd64.zip
 
     steps:
       - name: Checkout
