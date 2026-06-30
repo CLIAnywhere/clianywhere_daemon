@@ -160,6 +160,10 @@ func doCreateShortcut(job *shortcutJob) (retErr error) {
 	if _, err := oleutil.PutProperty(scDisp, "IconLocation", job.exePath+",0"); err != nil {
 		return fmt.Errorf("set IconLocation: %w", err)
 	}
+	scLog("step 4c2: set Description")
+	if _, err := oleutil.PutProperty(scDisp, "Description", "CLIAnywhere local web terminal"); err != nil {
+		return fmt.Errorf("set Description: %w", err)
+	}
 	scLog("step 4d: CallMethod Save")
 	if _, err := oleutil.CallMethod(scDisp, "Save"); err != nil {
 		return fmt.Errorf("Save: %w", err)
@@ -186,15 +190,12 @@ func createDesktopShortcut() error {
 		return fmt.Errorf("resolve desktop: %w", err)
 	}
 
-	exeName := filepath.Base(exePath)
-	if ext := filepath.Ext(exeName); ext != "" {
-		exeName = exeName[:len(exeName)-len(ext)]
-	}
-
+	// 固定文件名为 CLIAnywhere.lnk。Windows .lnk 的显示名就是文件名本身，
+	// 所以桌面/开始菜单里显示的即为 CLIAnywhere；下面 Description 作为悬停提示。
 	job := &shortcutJob{
 		exePath: exePath,
 		workDir: filepath.Dir(exePath),
-		lnkPath: filepath.Join(desktop, exeName+".lnk"),
+		lnkPath: filepath.Join(desktop, "CLIAnywhere.lnk"),
 		reply:   make(chan error, 1),
 	}
 

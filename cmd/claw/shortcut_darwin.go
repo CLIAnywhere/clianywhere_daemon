@@ -41,8 +41,8 @@ func createDesktopShortcut() error {
 		return fmt.Errorf("resolve desktop: %w", err)
 	}
 
-	exeName := filepath.Base(exePath)
-	commandPath := filepath.Join(desktop, exeName+".command")
+	// 固定文件名为 CLIAnywhere.command，Finder 里直接显示为 CLIAnywhere。
+	commandPath := filepath.Join(desktop, "CLIAnywhere.command")
 
 	// Shell script content: cd to the binary's dir, exec it so Terminal's
 	// process is the daemon itself — Ctrl+C in Terminal kills daemon cleanly.

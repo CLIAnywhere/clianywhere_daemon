@@ -79,20 +79,17 @@ func createDesktopShortcut() error {
 		return fmt.Errorf("resolve desktop: %w", err)
 	}
 
-	exeName := filepath.Base(exePath)
-	// Strip extension (rare on Linux but defensive).
-	if ext := filepath.Ext(exeName); ext != "" {
-		exeName = exeName[:len(exeName)-len(ext)]
-	}
-	desktopPath := filepath.Join(desktop, exeName+".desktop")
+	// 固定文件名为 CLIAnywhere.desktop，与展示名 Name= 保持一致，
+	// 这样文件管理器和 Dock 里显示的就是 CLIAnywhere 而不是可执行文件名。
+	desktopPath := filepath.Join(desktop, "CLIAnywhere.desktop")
 
 	// .desktop entry — Type=Application so it's launchable from the file manager.
 	// %f is a freedesktop placeholder (file argument); we don't consume it but
 	// including it follows the spec and silences some validators.
 	content := fmt.Sprintf(`[Desktop Entry]
 Type=Application
-Name=CliAnyWhere
-Comment=CliAnyWhere local web terminal
+Name=CLIAnywhere
+Comment=CLIAnywhere local web terminal
 Exec=%s
 Path=%s
 Icon=utilities-terminal
