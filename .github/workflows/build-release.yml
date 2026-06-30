@@ -2,6 +2,12 @@ name: Build Release
 
 # Manually triggered: build web/cli binaries for each platform, zip them,
 # and publish to a GitHub Release.
+#
+# 流程（绕开 actions/upload-artifact 的存储配额限制）：
+#   1. prepare job 算出 tag（默认 vYYYYMMDD-<短SHA>），创建 release
+#   2. 每个 build job 构建并打包后，直接用 gh release upload 上传到该 release
+#   3. 不再使用 upload-artifact / download-artifact
+#
 # Artifacts:
 #   claw-windows.zip             (Windows GUI, -H windowsgui)
 #   claw-macos-amd64.zip         (macOS Intel)
@@ -13,7 +19,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag (e.g. v1.0.0). Leave empty to use short commit SHA."
+        description: "Release tag (e.g. v1.0.0). Leave empty to use vYYYYMMDD-<shortSHA>."
         required: false
         default: ""
       prerelease:
@@ -29,8 +35,55 @@ permissions:
   contents: write
 
 jobs:
+  prepare:
+    name: Prepare Release
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compute tag
+        id: tag
+        run: |
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            short="$(echo ${{ github.sha }} | cut -c1-7)"
+            echo "tag=v$(date +'%Y%m%d')-${short}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          tag="${{ steps.tag.outputs.tag }}"
+          prerelease="${{ github.event.inputs.prerelease }}"
+          notes_file="$(mktemp)"
+          if [ -n "${{ github.event.inputs.notes }}" ]; then
+            printf '%s\n' "${{ github.event.inputs.notes }}" > "$notes_file"
+          else
+            printf 'Auto-built release for %s\n\n' "$tag" > "$notes_file"
+            printf 'SHA: %s\n' "${{ github.sha }}" >> "$notes_file"
+          fi
+
+          if gh release view "$tag" -R "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "Release $tag already exists, will append assets."
+          else
+            args=(create "$tag" -R "${{ github.repository }}" --title "$tag" --notes-file "$notes_file")
+            if [ "$prerelease" = "true" ]; then
+              args+=(--prerelease)
+            else
+              args+=(--latest=false)
+            fi
+            gh release "${args[@]}"
+          fi
+
   build:
     name: Build ${{ matrix.target }}
+    needs: prepare
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -104,67 +157,22 @@ jobs:
           zip '${{ matrix.archive }}' '${{ matrix.bin }}'
           ls -lh '${{ matrix.archive }}'
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.archive }}
-          path: ${{ matrix.archive }}
-          if-no-files-found: error
-          retention-days: 7
-
-  release:
-    name: Publish Release
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Compute tag
-        id: tag
-        run: |
-          if [ -n "${{ github.event.inputs.tag }}" ]; then
-            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
-          else
-            short="$(echo ${{ github.sha }} | cut -c1-7)"
-            echo "tag=v$(date +'%Y%m%d')-${short}" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-          merge-multiple: true
-
-      - name: List artifacts
-        run: ls -lh artifacts
-
-      - name: Create Release and Upload Assets
+      - name: Upload asset to Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -e
-          prerelease="${{ github.event.inputs.prerelease }}"
-          notes_file="$(mktemp)"
-          if [ -n "${{ github.event.inputs.notes }}" ]; then
-            printf '%s\n' "${{ github.event.inputs.notes }}" > "$notes_file"
-          else
-            printf 'Auto-built release for %s\n\n' "${{ steps.tag.outputs.tag }}" > "$notes_file"
-            printf 'SHA: %s\n' "${{ github.sha }}" >> "$notes_file"
-          fi
+          gh release upload "${{ needs.prepare.outputs.tag }}" \
+            '${{ matrix.archive }}' \
+            -R "${{ github.repository }}" --clobber
 
-          # If the tag already exists, append assets; otherwise create a new release.
-          if gh release view "${{ steps.tag.outputs.tag }}" -R "${{ github.repository }}" >/dev/null 2>&1; then
-            echo "Release ${{ steps.tag.outputs.tag }} exists, uploading assets..."
-            gh release upload "${{ steps.tag.outputs.tag }}" artifacts/*.zip -R "${{ github.repository }}" --clobber
-          else
-            gh release create "${{ steps.tag.outputs.tag }}" \
-              artifacts/*.zip \
-              -R "${{ github.repository }}" \
-              --title "${{ steps.tag.outputs.tag }}" \
-              --notes-file "$notes_file" \
-              $([ "$prerelease" = "true" ] && echo --prerelease || echo --latest=false)
-          fi
-
-          echo "Release URL:"
-          gh release view "${{ steps.tag.outputs.tag }}" -R "${{ github.repository }}" --json url -q .url
+  finalize:
+    name: Finalize
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Show Release URL
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view "${{ needs.prepare.outputs.tag }}" -R "${{ github.repository }}" --json url -q .url
