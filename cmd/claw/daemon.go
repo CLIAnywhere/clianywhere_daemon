@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -74,6 +75,14 @@ type Daemon struct {
 	// stop signal: Stop() closes this channel, startTSRelay exits loop on detection
 	stopCh    chan struct{}
 	stopOnce  sync.Once
+
+	// TS relay loop lifecycle: per-loop cancel + done channel so that
+	// replacing accesskey can synchronously stop the old loop before
+	// starting a new one (otherwise two loops race on the same accesskey
+	// and TurnServer's mutual-kick kills the daemon).
+	tsMu         sync.Mutex
+	tsLoopCancel context.CancelFunc
+	tsLoopDone   chan struct{}
 
 	// local WebSocket service (local attach)
 	localServer *LocalServer
@@ -393,139 +402,204 @@ func (d *Daemon) wsSendRaw(v any) {
 	}
 }
 
-// startTSRelay background manager for TurnServer WebSocket connection (direct connect + auto-reconnect)
-// exit loop when stopCh is closed, no more reconnection
+// startTSRelay synchronously stop any running TS relay loop, then start a new one.
+// Returns once the previous loop has fully exited (so at most one loop is ever
+// running). This is what lets us hot-swap accesskey without two loops racing
+// on the same key and triggering TurnServer's mutual-kick.
 func (d *Daemon) startTSRelay() {
+	d.tsMu.Lock()
+	// cancel old loop and wait for it to fully exit before starting a new one
+	if d.tsLoopCancel != nil {
+		oldCancel := d.tsLoopCancel
+		oldDone := d.tsLoopDone
+		d.tsMu.Unlock()
+
+		oldCancel()
+		// wait for old loop to exit; it may be blocked in relay.Connect
+		// (10s timeout) or sleepOrStopCtx, so this is bounded
+		<-oldDone
+
+		d.tsMu.Lock()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	d.tsLoopCancel = cancel
+	d.tsLoopDone = done
+	d.tsMu.Unlock()
+
 	go func() {
-		for {
-			// check stop signal
-			select {
-			case <-d.stopCh:
-				d.notifyState("stopped")
-				return
-			default:
-			}
-
-			// 1. probe TS servers and select best
-			d.notifyState("connecting")
-			best, err := SelectBestTurnServer(d.logger)
-			if err != nil {
-				d.logger.Errorf("[TS] select turn server failed: %v", err)
-				if d.sleepOrStop(10 * time.Second) {
-					d.notifyState("stopped")
-					return
-				}
-				continue
-			}
-			if best == nil {
-				d.logger.Errorf("[TS] no turn server available")
-				if d.sleepOrStop(10 * time.Second) {
-					d.notifyState("stopped")
-					return
-				}
-				continue
-			}
-
-			// 2. connecting directly to TS
-			relay := NewWSTurnRelay(d.accessKey, d.cfg, d.logger)
-			relay.OnMessage = func(msg *Message) {
-				d.handleMessage(msg, "TS")
-			}
-			relay.OnBinaryMessage = func(data []byte) {
-				d.handleBinary(data)
-			}
-			relay.OnP2PSignal = func(raw map[string]any) {
-				d.handleP2PSignal(raw)
-			}
-
-			if err := relay.Connect(best.WSURL()); err != nil {
-				// login failed (invalid accesskey etc.): log error and exit, no reconnect
-				if _, ok := err.(*LoginError); ok {
-					d.logger.Errorf("[TS] login failed: %v", err)
-					d.notifyState("stopped")
-					return
-				}
-				// IP blocked by TurnServer (same-day ban): long backoff
-				if _, ok := err.(*IPBlockedError); ok {
-					d.logger.Errorf("[TS] %v (retry in 1h)", err)
-					if d.sleepOrStop(1 * time.Hour) {
-						d.notifyState("stopped")
-						return
-					}
-					continue
-				}
-				// other connection errors: retry
-				d.logger.Errorf("[TS] connection failed: %v", err)
-				if d.sleepOrStop(10 * time.Second) {
-					d.notifyState("stopped")
-					return
-				}
-				continue
-			}
-
-			// replace old connection
-			d.wsMu.Lock()
-			if d.wsRelay != nil {
-				d.wsRelay.Close()
-			}
-			d.wsRelay = relay
-			d.wsMu.Unlock()
-
-			d.notifyState("connected")
-
-			// waiting for disconnect or stop
-			select {
-			case <-relay.Done():
-				// connection disconnected
-			case <-d.stopCh:
-				relay.Close()
-				d.notifyState("stopped")
-				return
-			}
-
-
-			// TS disconnected, cancel all in-progress file transfers
-			if d.fileTransfer != nil {
-				d.fileTransfer.CancelAll()
-			}
-			if d.proxyManager != nil {
-				d.proxyManager.CloseAll()
-			}
-
-			// clear subscriptions, stop PTY output
-			// preserve subscriptions when P2P is active — P2P is independent of TS
-			// and survives TS reconnects. Clearing subscriptions while P2P is live
-			// causes silent output loss (app keeps P2P heartbeat, sees no output).
-			d.rtcMu.RLock()
-			p2pActive := d.rtc != nil && d.rtc.Connected()
-			d.rtcMu.RUnlock()
-			if !p2pActive {
-				d.subMu.Lock()
-				d.subscribed = make(map[string]bool)
-				d.subMu.Unlock()
-			}
-
-			d.wsMu.Lock()
-			if d.wsRelay == relay {
-				d.wsRelay = nil
-			}
-			d.wsMu.Unlock()
-
-			if d.sleepOrStop(5 * time.Second) {
-				d.notifyState("stopped")
-				return
-			}
-		}
+		defer close(done)
+		d.tsRelayLoop(ctx)
 	}()
 }
 
-// sleepOrStop wait for duration, return true immediately if stopCh is closed
-func (d *Daemon) sleepOrStop(duration time.Duration) bool {
+// tsRelayLoop background manager for TurnServer WebSocket connection (direct connect + auto-reconnect)
+// exits when stopCh is closed, the per-loop ctx is canceled (accesskey swap), or login fatally fails.
+func (d *Daemon) tsRelayLoop(ctx context.Context) {
+	for {
+		// check stop / cancel signal
+		select {
+		case <-d.stopCh:
+			d.notifyState("stopped")
+			return
+		case <-ctx.Done():
+			// canceled by restart; daemon stays alive, do not notify stopped
+			return
+		default:
+		}
+
+		// 1. probe TS servers and select best
+		d.notifyState("connecting")
+		best, err := SelectBestTurnServer(d.logger)
+		if err != nil {
+			d.logger.Errorf("[TS] select turn server failed: %v", err)
+			switch d.sleepOrStopCtx(ctx, 10*time.Second) {
+			case tsSleepStop:
+				d.notifyState("stopped")
+				return
+			case tsSleepCancel:
+				return
+			}
+			continue
+		}
+		if best == nil {
+			d.logger.Errorf("[TS] no turn server available")
+			switch d.sleepOrStopCtx(ctx, 10*time.Second) {
+			case tsSleepStop:
+				d.notifyState("stopped")
+				return
+			case tsSleepCancel:
+				return
+			}
+			continue
+		}
+
+		// 2. connecting directly to TS
+		relay := NewWSTurnRelay(d.accessKey, d.cfg, d.logger)
+		relay.OnMessage = func(msg *Message) {
+			d.handleMessage(msg, "TS")
+		}
+		relay.OnBinaryMessage = func(data []byte) {
+			d.handleBinary(data)
+		}
+		relay.OnP2PSignal = func(raw map[string]any) {
+			d.handleP2PSignal(raw)
+		}
+
+		if err := relay.Connect(best.WSURL()); err != nil {
+			// login failed (invalid accesskey etc.): log error and exit, no reconnect
+			if _, ok := err.(*LoginError); ok {
+				d.logger.Errorf("[TS] login failed: %v", err)
+				d.notifyState("stopped")
+				return
+			}
+			// IP blocked by TurnServer (same-day ban): long backoff
+			if _, ok := err.(*IPBlockedError); ok {
+				d.logger.Errorf("[TS] %v (retry in 1h)", err)
+				switch d.sleepOrStopCtx(ctx, 1*time.Hour) {
+				case tsSleepStop:
+					d.notifyState("stopped")
+					return
+				case tsSleepCancel:
+					return
+				}
+				continue
+			}
+			// other connection errors: retry
+			d.logger.Errorf("[TS] connection failed: %v", err)
+			switch d.sleepOrStopCtx(ctx, 10*time.Second) {
+			case tsSleepStop:
+				d.notifyState("stopped")
+				return
+			case tsSleepCancel:
+				return
+			}
+			continue
+		}
+
+		// replace old connection
+		d.wsMu.Lock()
+		if d.wsRelay != nil {
+			d.wsRelay.Close()
+		}
+		d.wsRelay = relay
+		d.wsMu.Unlock()
+
+		d.notifyState("connected")
+
+		// waiting for disconnect / stop / cancel
+		select {
+		case <-relay.Done():
+			// connection disconnected
+		case <-d.stopCh:
+			relay.Close()
+			d.notifyState("stopped")
+			return
+		case <-ctx.Done():
+			relay.Close()
+			// canceled by restart; daemon stays alive, do not notify stopped
+			return
+		}
+
+
+		// TS disconnected, cancel all in-progress file transfers
+		if d.fileTransfer != nil {
+			d.fileTransfer.CancelAll()
+		}
+		if d.proxyManager != nil {
+			d.proxyManager.CloseAll()
+		}
+
+		// clear subscriptions, stop PTY output
+		// preserve subscriptions when P2P is active — P2P is independent of TS
+		// and survives TS reconnects. Clearing subscriptions while P2P is live
+		// causes silent output loss (app keeps P2P heartbeat, sees no output).
+		d.rtcMu.RLock()
+		p2pActive := d.rtc != nil && d.rtc.Connected()
+		d.rtcMu.RUnlock()
+		if !p2pActive {
+			d.subMu.Lock()
+			d.subscribed = make(map[string]bool)
+			d.subMu.Unlock()
+		}
+
+		d.wsMu.Lock()
+		if d.wsRelay == relay {
+			d.wsRelay = nil
+		}
+		d.wsMu.Unlock()
+
+		switch d.sleepOrStopCtx(ctx, 5*time.Second) {
+		case tsSleepStop:
+			d.notifyState("stopped")
+			return
+		case tsSleepCancel:
+			return
+		}
+	}
+}
+
+// tsSleepResult indicates why sleepOrStopCtx woke up.
+type tsSleepResult int
+
+const (
+	tsSleepTimeout tsSleepResult = iota // timer expired, continue loop
+	tsSleepStop                         // stopCh closed, exit and notify "stopped"
+	tsSleepCancel                       // ctx canceled (accesskey replacement), exit silently
+)
+
+// sleepOrStopCtx waits for duration, returning the reason it woke up.
+// stopCh → daemon is shutting down; ctx.Done → accesskey replacement.
+// The distinction matters because a restart should not flash "stopped" to
+// the UI — the new loop will immediately transition to "connecting".
+func (d *Daemon) sleepOrStopCtx(ctx context.Context, duration time.Duration) tsSleepResult {
 	select {
 	case <-d.stopCh:
-		return true
+		return tsSleepStop
+	case <-ctx.Done():
+		return tsSleepCancel
 	case <-time.After(duration):
-		return false
+		return tsSleepTimeout
 	}
 }
 
@@ -580,6 +654,14 @@ func (d *Daemon) exitWithReason(reason, detail string) {
 func (d *Daemon) Stop() {
 	d.stopOnce.Do(func() {
 		close(d.stopCh)
+		// cancel TS relay loop too so it exits even if blocked in
+		// sleepOrStopCtx or between iterations
+		d.tsMu.Lock()
+		tsCancel := d.tsLoopCancel
+		d.tsMu.Unlock()
+		if tsCancel != nil {
+			tsCancel()
+		}
 		// also close current TS connection to speed up exit
 		d.wsMu.RLock()
 		relay := d.wsRelay
