@@ -51,8 +51,12 @@ type Daemon struct {
 	// security code: enabled flag and per-connection verification state
 	// secCodeEnabled: 1=code file exists, 0=no code set (updated on save/clear, no file IO in hot path)
 	// secCodeVerified: 1=current app has verified, 0=not yet (reset on peer_online/p2p_offer/code change)
-	secCodeEnabled  int32
-	secCodeVerified int32
+	// secCodeAttemptsLeft: failed verify budget for the entire daemon lifetime — once it hits 0
+	//   the daemon exits. NOT reset on new connections, code change, or successful verify.
+	//   Only initialized once in Init() (daemon restart resets it).
+	secCodeEnabled       int32
+	secCodeVerified      int32
+	secCodeAttemptsLeft  int32
 
 	// set of sessions subscribed by frontend: only sessions that went through request_history receive real-time output
 	subscribed map[string]bool
@@ -129,6 +133,7 @@ func (d *Daemon) Init() {
 	if HasSecurityCode() {
 		atomic.StoreInt32(&d.secCodeEnabled, 1)
 	}
+	atomic.StoreInt32(&d.secCodeAttemptsLeft, MaxSecCodeAttempts)
 
 	// 3. initialize file transfer manager
 	d.fileTransfer = NewFileTransferManager(d, d.logger)
@@ -180,6 +185,7 @@ func (d *Daemon) handleP2PSignal(raw map[string]any) {
 
 	case "peer_online":
 		// New app connection: reset security-code verification state (per-connection)
+		// Note: secCodeAttemptsLeft is NOT reset — it is a daemon-lifetime budget
 		d.logger.Infof("[TS] peer_online: new app connection, resetting secCodeVerified")
 		atomic.StoreInt32(&d.secCodeVerified, 0)
 
@@ -197,6 +203,7 @@ func (d *Daemon) startP2PAsAnswerer(sdpOffer string, earlyICE []map[string]any) 
 	// new frontend sent p2p_offer, old connection is done, clearing kicked flag
 	atomic.StoreInt32(&d.kicked, 0)
 	// New app connection: reset security-code verification state
+	// Note: secCodeAttemptsLeft is NOT reset — it is a daemon-lifetime budget
 	atomic.StoreInt32(&d.secCodeVerified, 0)
 
 	// close old P2P connection
@@ -1062,6 +1069,8 @@ func (d *Daemon) checkSecCode() bool {
 }
 
 // handleSecCodeVerify verifies the security code sent by the remote client.
+// Each failed attempt decrements secCodeAttemptsLeft; when it reaches zero the
+// daemon shuts down to prevent brute-force guessing of the 6-digit code.
 func (d *Daemon) handleSecCodeVerify(msg *Message) {
 	code := LoadSecurityCode()
 	if code == "" {
@@ -1071,10 +1080,33 @@ func (d *Daemon) handleSecCodeVerify(msg *Message) {
 	}
 	if msg.Data == code {
 		atomic.StoreInt32(&d.secCodeVerified, 1)
+		// Note: secCodeAttemptsLeft is NOT reset on success — daemon-lifetime budget
 		d.sendJSON(&Message{Type: TypeSecCodeOK})
-	} else {
-		d.sendJSON(&Message{Type: TypeSecCodeError, Error: "Incorrect security code"})
+		return
 	}
+
+	// Wrong code: consume one attempt
+	left := atomic.AddInt32(&d.secCodeAttemptsLeft, -1)
+	if left <= 0 {
+		d.logger.Infof("[SECCODE] security code verify failed %d times, shutting down daemon", MaxSecCodeAttempts)
+		d.sendJSON(&Message{
+			Type:              TypeSecCodeError,
+			Error:             "Max verification attempts reached",
+			RemainingAttempts: 0,
+		})
+		// allow the message to flush before exiting
+		go func() {
+			time.Sleep(500 * time.Millisecond)
+			d.exitWithReason("sec_code_locked", "max verification attempts reached")
+		}()
+		return
+	}
+	d.logger.Infof("[SECCODE] security code verify failed, %d/%d attempts remaining", left, MaxSecCodeAttempts)
+	d.sendJSON(&Message{
+		Type:              TypeSecCodeError,
+		Error:             "Incorrect security code",
+		RemainingAttempts: int(left),
+	})
 }
 
 // handleChannelSelect handle browser channel selection.

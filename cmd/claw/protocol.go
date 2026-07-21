@@ -6,6 +6,11 @@ package main
 // file transfer, proxy tunnel, etc.) within this limit including their headers.
 const MaxFrameSize = 31 * 1024 // 31KB
 
+// MaxSecCodeAttempts is the maximum number of failed security-code verification
+// attempts allowed per app connection. After this many consecutive failures
+// the daemon shuts down to prevent brute-force guessing of the 6-digit code.
+const MaxSecCodeAttempts = 10
+
 // Binary frame Opcodes (first byte)
 const (
 	OpcodeFileTransfer = 0x01 // file transfer: [0x01][4B fileId][4B chunkIdx][data...] (9-byte header)
@@ -147,6 +152,9 @@ type Message struct {
 	Name           string       `json:"name,omitempty"`
 	SystemInfo     string       `json:"system_info,omitempty"`
 	SecCodeRequired bool        `json:"sec_code_required,omitempty"`
+
+	// security code verification: remaining attempts after a failed verify (0 = daemon shutting down)
+	RemainingAttempts int `json:"remaining_attempts,omitempty"`
 
 	// server manager
 	AccessKey  string     `json:"accesskey,omitempty"`
