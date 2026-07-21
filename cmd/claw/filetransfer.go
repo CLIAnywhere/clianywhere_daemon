@@ -445,8 +445,9 @@ func (ftm *FileTransferManager) HandleDirListRequest(reqPath string) {
 			continue
 		}
 		entry := DirEntry{
-			Name: e.Name(),
-			Size: info.Size(),
+			Name:    e.Name(),
+			Size:    info.Size(),
+			ModTime: info.ModTime().UnixMilli(),
 		}
 		if e.IsDir() {
 			dirs = append(dirs, entry)

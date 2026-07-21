@@ -44,7 +44,7 @@ func inputAccessKeyCLI(scanner *bufio.Scanner) string {
 		if accessKeyRegex.MatchString(key) {
 			return key
 		}
-		fmt.Println("Invalid AccessKey (only 0-9, a-z allowed), try again.")
+		fmt.Println("Invalid AccessKey (only 0-9, a-z, A-Z allowed), try again.")
 	}
 }
 

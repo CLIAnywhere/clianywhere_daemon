@@ -193,8 +193,9 @@ type StagedFile struct {
 
 // DirEntry directory entry (file or subdirectory)
 type DirEntry struct {
-	Name string `json:"name"`
-	Size int64  `json:"size"`
+	Name    string `json:"name"`
+	Size    int64  `json:"size"`
+	ModTime int64  `json:"mod_time"` // modification time, unix milliseconds
 }
 
 // DirEntries directory content (dirs first, then files)

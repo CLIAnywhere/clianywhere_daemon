@@ -15,7 +15,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-var accessKeyRegex = regexp.MustCompile(`^[0-9a-z]+$`)
+var accessKeyRegex = regexp.MustCompile(`^[0-9a-zA-Z]+$`)
 
 // BindCodeResult intermediate data for binding flow, for UI to display QR code
 type BindCodeResult struct {
