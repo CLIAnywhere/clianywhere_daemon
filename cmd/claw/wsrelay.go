@@ -97,6 +97,7 @@ func (w *WSTurnRelay) Connect(url string) error {
 	loginMsg, _ := json.Marshal(map[string]any{
 		"type":      "login",
 		"accesskey": w.accessKey,
+		"version":   Version,
 	})
 	if err := conn.WriteMessage(websocket.TextMessage, loginMsg); err != nil {
 		conn.Close()

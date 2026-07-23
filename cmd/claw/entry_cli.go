@@ -33,7 +33,7 @@ func main() {
 			return
 		case "version":
 			ensureConsole()
-			fmt.Println("daemon_go v0.2.0")
+			fmt.Printf("daemon_go %s\n", Version)
 			return
 		case "status":
 			ensureConsole()
