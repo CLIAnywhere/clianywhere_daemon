@@ -394,17 +394,12 @@ func SelectBestTurnServer(logger Logger) (*TurnServerEntry, error) {
 		return nil, fmt.Errorf("no servers available for region %s", regionKey)
 	}
 
-	// single server: probe once
+	// single server in this region: use it directly, skip health probe.
+	// no alternative to pick anyway; if it's down the WebSocket dial will fail
+	// and the relay loop's reconnect backoff takes over.
 	if len(servers) == 1 {
-		r := probeServer(servers[0], logger)
-		if r.err != nil {
-			return nil, fmt.Errorf("server %s health check failed: %v", servers[0].Addr, r.err)
-		}
-		if !r.alive || r.health >= healthThreshold {
-			return nil, fmt.Errorf("server %s unhealthy (alive=%v health=%.4f)", servers[0].Addr, r.alive, r.health)
-		}
 		if logger != nil {
-			logger.Infof("[TS] selected %s (only server in region %s, health=%.4f)", servers[0].Addr, regionKey, r.health)
+			logger.Infof("[TS] only one server in region %s, using %s directly", regionKey, servers[0].Addr)
 		}
 		return &TurnServerEntry{Addr: servers[0].Addr}, nil
 	}
