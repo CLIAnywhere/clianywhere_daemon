@@ -3,6 +3,16 @@
 set -e
 cd "$(dirname "$0")"
 
+# Pause before exit when run by double-click (Terminal.app closes window on exit).
+pause_if_terminal() {
+    if [ -t 0 ]; then
+        echo ""
+        echo "Press Enter to close..."
+        read -r _
+    fi
+}
+trap pause_if_terminal EXIT
+
 REQUIRED_MAJOR=1
 REQUIRED_MINOR=25
 

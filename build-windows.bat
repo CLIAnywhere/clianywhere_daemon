@@ -12,7 +12,7 @@ where go >nul 2>nul
 if errorlevel 1 (
     echo Error: Go is not installed or not in PATH.
     echo        Please install Go %REQ_MAJOR%.%REQ_MINOR% or later from https://go.dev/dl/
-    exit /b 1
+    goto :failed
 )
 
 for /f "delims=" %%v in ('go env GOVERSION') do set "GOVERSION=%%v"
@@ -31,13 +31,22 @@ if %GOMAJOR% EQU %REQ_MAJOR% if %GOMINOR% GEQ %REQ_MINOR% set "GOOK=1"
 if not "%GOOK%"=="1" (
     echo Error: Go %GOMAJOR%.%GOMINOR% is too old ^(need %REQ_MAJOR%.%REQ_MINOR%+^).
     echo        Please update Go from https://go.dev/dl/
-    exit /b 1
+    goto :failed
 )
 echo [go] %GOMAJOR%.%GOMINOR% detected, OK.
 
 REM --- Build ----------------------------------------------------------------
 echo [build] claw (windows/amd64, web)
 go build -tags web -ldflags "-H windowsgui" -o claw.exe ./cmd/claw
-if errorlevel 1 exit /b 1
+if errorlevel 1 goto :failed
 echo [done]  %CD%\claw.exe
 endlocal
+echo.
+pause
+exit /b 0
+
+:failed
+echo.
+echo Build failed.
+pause
+exit /b 1
