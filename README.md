@@ -63,3 +63,19 @@ xattr -dr com.apple.quarantine /path/to/this/folder
 ```
 
 Then run the build script (or the resulting `claw`) again.
+
+### Linux
+
+Two flavors are available:
+
+- **Desktop (web UI)** — `build-linux-desktop.sh` — same management-UI experience as Windows/macOS.
+- **CLI (no UI)** — `build-linux-cli.sh` — headless build for servers / TTY-only environments.
+
+```sh
+chmod +x build-linux-desktop.sh   # or build-linux-cli.sh
+./build-linux-desktop.sh           # produces ./claw (web)
+# or
+./build-linux-cli.sh               # produces ./claw (cli)
+```
+
+Both produce a `claw` binary in this folder. Run `./claw` to start.
