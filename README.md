@@ -79,3 +79,10 @@ chmod +x build-linux-desktop.sh   # or build-linux-cli.sh
 ```
 
 Both produce a `claw` binary in this folder. Run `./claw` to start.
+
+## Third-party notices
+
+`internal/xterm/` is vendored from [xterm-go](https://github.com/gitpod-io/xterm-go)
+(MIT license, Copyright (c) 2026 Ona), which is itself a Go port of the headless
+subset of [xterm.js](https://github.com/xtermjs/xterm.js) (MIT license). The
+upstream LICENSE is preserved at [`internal/xterm/LICENSE`](internal/xterm/LICENSE).
