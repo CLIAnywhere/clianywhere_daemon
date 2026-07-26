@@ -5,6 +5,23 @@ securely access a local terminal from anywhere.
 
 Pair the daemon with the **CLIAnywhere app** (download from <https://www.clianywhere.com>).
 
+## Core feature: reconnect with context, keep working
+
+Your terminal session lives on **your own machine**, not in the cloud. The daemon
+keeps full session state (scrollback history + live process) alive on the host,
+so:
+
+- **Network drops, app crashes, device restart** — reconnect from any device and
+  pick up the exact same session, with full scrollback, as if nothing happened.
+- **Switch devices freely** — start a session from your phone on the train,
+  continue it from a browser at your desk, all on the same running process.
+- **Long-running tasks stay safe** — a build, a deploy, a Claude Code session
+  will not be killed just because your connection dropped. Reconnect and the
+  output is still there.
+
+This is the whole point of CLIAnywhere: your work survives the connection, not
+the other way around.
+
 ## How it behaves
 
 - **First run** — starts the daemon in the background **and** opens the management UI.
