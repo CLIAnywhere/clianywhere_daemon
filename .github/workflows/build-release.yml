@@ -3,10 +3,10 @@ name: Build Release
 # Manually triggered: build web/cli binaries for each platform, zip them,
 # and publish to a GitHub Release.
 #
-# 流程（绕开 actions/upload-artifact 的存储配额限制）：
-#   1. prepare job 算出 tag（默认 vYYYYMMDD-<短SHA>），创建 release
-#   2. 每个 build job 构建并打包后，直接用 gh release upload 上传到该 release
-#   3. 不再使用 upload-artifact / download-artifact
+# Workflow (bypasses actions/upload-artifact storage quota):
+#   1. prepare job computes the tag (default vYYYYMMDD-<shortSHA>) and creates the release
+#   2. each build job builds and packages, then uploads the asset directly via gh release upload
+#   3. actions/upload-artifact and download-artifact are intentionally not used
 #
 # Artifacts:
 #   claw-windows.zip             (Windows GUI, -H windowsgui)
