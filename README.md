@@ -5,6 +5,8 @@ securely access a local terminal from anywhere.
 
 Pair the daemon with the **CLIAnywhere app** (download from <https://www.clianywhere.com>).
 
+Licensed under the [Apache License, Version 2.0](LICENSE).
+
 ## Core feature: reconnect with context, keep working
 
 Your terminal session lives on **your own machine**, not in the cloud. The daemon
