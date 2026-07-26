@@ -15,7 +15,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	xterm "github.com/CLIAnywhere/pc_daemon/internal/xterm"
+	xterm "github.com/CLIAnywhere/clianywhere_daemon/internal/xterm"
 
 	"golang.org/x/term"
 )
