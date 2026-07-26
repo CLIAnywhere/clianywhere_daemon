@@ -7,6 +7,11 @@ daemon_mac_*
 daemonrun
 *.exe
 
+# claw build output (script-produced binaries and dated snapshots)
+/claw
+/claw-*
+/claw_*
+
 # debug binary
 cli
 
@@ -30,8 +35,13 @@ Thumbs.db
 *.swp
 *.swo
 
-# Claude Code
+# Claude Code / internal dev notes
 .claude/
+AGENTS.md
+ATTACH_REFACTOR.md
+
+# Cloudflare Wrangler local state
+.wrangler/
 
 # access key cache
 .accesskey
