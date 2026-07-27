@@ -18,6 +18,16 @@ const (
 	OpcodeProxyData = 0x05 // proxy tunnel data: [0x05][4B connId BE][payload...] (5-byte header)
 )
 
+// Fatal error flag — TS attaches this field to any "permanent, non-retryable"
+// error response:
+//   { "type": "<error_type>", "msg": "...", "fatal": true }
+// On fatal==true the daemon stops the reconnect loop immediately (without
+// exiting the process); the user can switch to a valid accesskey and retry.
+// Current fatal scenarios: invalid accesskey signature, accesskey not present
+// in globalserver (404). Future fatal cases can reuse this field without
+// adding new message types.
+const FatalField = "fatal"
+
 // Message type constants — must match daemon_node/protocol.js and frontend terminal.html
 const (
 	TypeAuth           = "auth"

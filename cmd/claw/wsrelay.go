@@ -119,18 +119,21 @@ func (w *WSTurnRelay) Connect(url string) error {
 		return fmt.Errorf("parse login response failed: %w", err)
 	}
 
-	// Only invalid accesskey is fatal (daemon stops reconnecting).
-	// Everything else (register_error, IP-blocked, malformed login,
-	// future unknown error types) is treated as transient so the daemon
-	// retries with its usual backoff.
+	// Fatal flag handling — TS attaches fatal:true to any permanent,
+	// non-retryable error (currently: accesskey not found in globalserver;
+	// future fatal cases can reuse the same flag). On fatal:true the daemon
+	// stops the reconnect loop without exiting the process, so the user can
+	// switch to a valid accesskey and retry without restarting the daemon.
+	if fatal, _ := resp["fatal"].(bool); fatal {
+		conn.Close()
+		msg, _ := resp["msg"].(string)
+		return &LoginError{Msg: fmt.Sprintf("login rejected (fatal): %v", msg)}
+	}
+
+	// IP blocked by TurnServer (same-day ban, resets next day):
+	// caller uses a long backoff to avoid wasteful polling.
 	if resp["type"] == "login_error" {
 		msg, _ := resp["msg"].(string)
-		if msg == "invalid accesskey" {
-			conn.Close()
-			return &LoginError{Msg: fmt.Sprintf("login failed: %v", resp["msg"])}
-		}
-		// IP blocked by TurnServer (same-day ban, resets next day):
-		// caller uses a long backoff to avoid wasteful polling.
 		if strings.HasPrefix(msg, "IP blocked") {
 			conn.Close()
 			return &IPBlockedError{Msg: fmt.Sprintf("login rejected: %v", resp["msg"])}
