@@ -174,13 +174,11 @@ func (ls *LocalServer) Close() {
 
 // ServeHTTP handle WebSocket connection
 func (ls *LocalServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	ls.logger.Debugf("[LOCAL_WS] ServeHTTP called: %s %s", r.Method, r.URL.String())
 	conn, err := ls.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		ls.logger.Infof("[LOCAL_WS] Upgrade failed: %v", err)
 		return
 	}
-	ls.logger.Debugf("[LOCAL_WS] Upgrade OK, conns=%d", len(ls.conns))
 	// TCP_NODELAY — disable Nagle algorithm, reduce small packet latency
 	if tc, ok := conn.UnderlyingConn().(*net.TCPConn); ok {
 		tc.SetNoDelay(true)
@@ -218,16 +216,13 @@ func (ls *LocalServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		ls.mu.Lock()
 		delete(ls.conns, conn)
-		remaining := len(ls.conns)
 		ls.mu.Unlock()
-		ls.logger.Debugf("[LOCAL_WS] Connection removed, remaining=%d\n", remaining)
 		conn.Close()
 	}()
 
 	for {
 		_, msgBytes, err := conn.ReadMessage()
 		if err != nil {
-			ls.logger.Debugf("[LOCAL_WS] ReadMessage error (closing): %v\n", err)
 			break
 		}
 
