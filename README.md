@@ -27,6 +27,22 @@ so:
 This is the whole point of CLIAnywhere: your work survives the connection, not
 the other way around.
 
+## End-to-end encryption
+
+All traffic between the app and the daemon is end-to-end encrypted. The relay
+(TURN/WSS) and P2P channel (WebRTC DTLS) only carry ciphertext.
+
+- **Key agreement** — SPAKE2 (password-authenticated key exchange) over NIST
+  P-256, using the device's 6-character security code as the PAKE password.
+  The code is **never transmitted**. Keys are derived per session via
+  HKDF-SHA256 and bound to the connection transcript.
+- **Data encryption** — AES-256-GCM, with a unique nonce and strictly
+  increasing sequence numbers per message (replay protection).
+- **Properties** — encryption is forced on every connection (no plaintext
+  fallback); session/history/file/proxy content is only served after the
+  handshake succeeds; keys are per-channel and refreshed on every connection
+  and channel switch; online guessing of the code is capped at 10 attempts.
+
 ## How it behaves
 
 - **First run** — starts the daemon in the background **and** opens the management UI.
