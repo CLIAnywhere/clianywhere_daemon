@@ -5,7 +5,10 @@ securely access a local terminal from anywhere.
 
 Pair the daemon with the **CLIAnywhere app** (download from <https://www.clianywhere.com>).
 
-Licensed under the [Apache License, Version 2.0](LICENSE).
+Licensed under the [Business Source License 1.1](LICENSE).
+Personal and internal use is free. Commercial use (e.g. reselling the daemon
+or offering it as a paid/hosted service) requires a separate commercial
+license from the Licensor.
 
 ## Core feature: reconnect with context, keep working
 
