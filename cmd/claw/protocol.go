@@ -6,10 +6,11 @@ package main
 // file transfer, proxy tunnel, etc.) within this limit including their headers.
 const MaxFrameSize = 31 * 1024 // 31KB
 
-// MaxSecCodeAttempts is the maximum number of failed security-code verification
-// attempts allowed per app connection. After this many consecutive failures
-// the daemon shuts down to prevent brute-force guessing of the 6-digit code.
-const MaxSecCodeAttempts = 10
+// MaxSecCodeAttempts is the maximum number of consecutive failed security-code
+// verification attempts before the daemon shuts down to prevent brute-force
+// guessing of the 6-digit code. A successful handshake resets the counter.
+// Set to 11 so the first wrong attempt is reported as "10 remaining".
+const MaxSecCodeAttempts = 11
 
 // defaultSecCode is used when the daemon has no real security code set: the
 // data plane is still ALWAYS encrypted (forced encryption), with this public

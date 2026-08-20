@@ -218,6 +218,49 @@ func TestSecureHandshakeWrongCode(t *testing.T) {
 	}
 }
 
+func TestSecureAttemptBudgetResetOnSuccess(t *testing.T) {
+	const code = "123456"
+	d, ch, _ := testDaemonHarness(t, code)
+
+	// Simulate accumulated failures: the budget is nearly exhausted.
+	atomic.StoreInt32(&d.secCodeAttemptsLeft, 3)
+
+	// A successful handshake must restore the full budget, so ordinary
+	// connections never accumulate failures toward a shutdown.
+	client, sid := appSide(t, code, d.accessKey)
+	d.handleMessage(&Message{
+		Type: TypePakeStart,
+		Sid:  base64.StdEncoding.EncodeToString(sid),
+		Pa:   base64.StdEncoding.EncodeToString(client.Share()),
+	}, "TS")
+	reply := nextMsg(t, ch)
+	if reply.Type != TypePakeReply {
+		t.Fatalf("expected pake_reply, got %s", reply.Type)
+	}
+	pb, _ := base64.StdEncoding.DecodeString(reply.Pb)
+	if err := client.SetPeerShare(pb); err != nil {
+		t.Fatal(err)
+	}
+	keys, err := client.Finish(sid, d.accessKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.handleMessage(&Message{
+		Type: TypeSecConfirm,
+		TagA: base64.StdEncoding.EncodeToString(TagA(keys, client.Transcript())),
+	}, "TS")
+	if m := nextMsg(t, ch); m.Type != TypeSecOK {
+		t.Fatalf("expected sec_ok, got %s", m.Type)
+	}
+	if m := nextMsg(t, ch); m.Type != TypeSecureReady {
+		t.Fatalf("expected secure_ready, got %s", m.Type)
+	}
+
+	if got := atomic.LoadInt32(&d.secCodeAttemptsLeft); got != MaxSecCodeAttempts {
+		t.Fatalf("attempt budget must reset on successful handshake: got %d, want %d", got, MaxSecCodeAttempts)
+	}
+}
+
 func TestSecureForcedEncryptionNoCode(t *testing.T) {
 	// Forced encryption: even a daemon WITHOUT a real security code completes
 	// the handshake using the public default (000000) and then encrypts.

@@ -5,9 +5,10 @@ package main
 // The daemon is the server (B side). It replies to pake_start with pake_reply,
 // then waits for sec_confirm. A wrong code surfaces as a key-confirmation tag
 // mismatch, which is indistinguishable from network noise except for the single
-// sec_code_error response the app uses to update its UI. The existing
-// secCodeAttemptsLeft budget (10, daemon shuts down at 0) bounds online
-// guessing of the 6-digit code.
+// sec_code_error response the app uses to update its UI. The
+// secCodeAttemptsLeft budget (MaxSecCodeAttempts consecutive failures, daemon
+// shuts down at 0) bounds online guessing of the 6-digit code; a successful
+// handshake resets the counter.
 //
 // The security code is loaded once per handshake via LoadSecurityCode(); when
 // empty the public default (defaultSecCode) is used so encryption is always on
@@ -142,6 +143,10 @@ func (d *Daemon) handleSecConfirm(msg *Message) {
 	d.secure = sc
 	d.secureMu.Unlock()
 	atomic.StoreInt32(&d.secCodeVerified, 1)
+	// Successful auth proves knowledge of the code: restore the attempt budget so
+	// ordinary connections never accumulate failures toward a shutdown (the budget
+	// only bounds consecutive brute-force guesses).
+	atomic.StoreInt32(&d.secCodeAttemptsLeft, MaxSecCodeAttempts)
 
 	d.sendJSON(&Message{Type: TypeSecOK, TagB: base64.StdEncoding.EncodeToString(TagB(keys, tt))})
 	d.sendJSON(&Message{Type: TypeSecureReady})

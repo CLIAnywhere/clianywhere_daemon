@@ -51,9 +51,8 @@ type Daemon struct {
 	// security code: enabled flag and per-connection verification state
 	// secCodeEnabled: 1=code file exists, 0=no code set (updated on save/clear, no file IO in hot path)
 	// secCodeVerified: 1=current app has verified, 0=not yet (reset on peer_online/p2p_offer/code change)
-	// secCodeAttemptsLeft: failed verify budget for the entire daemon lifetime — once it hits 0
-	//   the daemon exits. NOT reset on new connections, code change, or successful verify.
-	//   Only initialized once in Init() (daemon restart resets it).
+	// secCodeAttemptsLeft: consecutive failed-verify budget — once it hits 0 the
+	//   daemon exits. Reset to MaxSecCodeAttempts on a successful handshake.
 	secCodeEnabled       int32
 	secCodeVerified      int32
 	secCodeAttemptsLeft  int32
@@ -195,7 +194,8 @@ func (d *Daemon) handleP2PSignal(raw map[string]any) {
 
 	case "peer_online":
 		// New app connection: reset security-code verification state (per-connection)
-		// Note: secCodeAttemptsLeft is NOT reset — it is a daemon-lifetime budget
+		// secCodeAttemptsLeft is intentionally kept across connections: it bounds
+		// CONSECUTIVE failures and is restored only by a successful handshake.
 		d.logger.Infof("[TS] peer_online: new app connection, resetting secCodeVerified")
 		atomic.StoreInt32(&d.secCodeVerified, 0)
 		// Keys are per-connection: a new peer must re-run the handshake.
@@ -1142,7 +1142,8 @@ func (d *Daemon) handleChannelSelect(msg *Message) {
 	// TS→P2P switch: keys are per-channel, so tear down the encrypted channel
 	// before the app re-runs SPAKE2 on the P2P DataChannel. Done at the actual
 	// switch point (not at p2p_offer) so an in-flight TS handshake isn't wiped
-	// mid-negotiation. secCodeAttemptsLeft is NOT reset (daemon-lifetime budget).
+	// mid-negotiation. secCodeAttemptsLeft is only restored on a successful
+	// handshake, not on a channel switch.
 	if channel == "p2p" {
 		atomic.StoreInt32(&d.secCodeVerified, 0)
 		d.resetSecure("channel_switch_p2p")
