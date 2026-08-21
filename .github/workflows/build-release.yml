@@ -227,57 +227,83 @@ jobs:
           echo "--- Available identities ---"
           security find-identity -v -p codesigning "$KEYCHAIN_PATH"
 
-      - name: Sign and notarize claw (amd64)
+      - name: Sign and notarize CLIAnywhere.app (amd64)
         env:
           APPLE_P8: ${{ secrets.APPLE_P8 }}
         run: |
           set -e
           echo "$APPLE_P8" > /tmp/key.p8
+          tag="${{ needs.prepare.outputs.tag }}"
+          VER="${tag#v}"
           cd /tmp/release/amd64
-          codesign --sign "$CERT_CN" --options runtime --timestamp claw
-          codesign -dv claw
-          zip /tmp/notarize-amd64.zip claw
+          # 组装 .app bundle
+          mkdir -p "CLIAnywhere.app/Contents/MacOS"
+          cp claw "CLIAnywhere.app/Contents/MacOS/claw"
+          cp "${{ github.workspace }}/packaging/macos/Info.plist" "CLIAnywhere.app/Contents/Info.plist"
+          sed -i '' "s/VERSION_PLACEHOLDER/${VER}/g" "CLIAnywhere.app/Contents/Info.plist"
+          # 签名 .app
+          codesign --sign "$CERT_CN" --options runtime --timestamp \
+            --force --deep "CLIAnywhere.app"
+          codesign -dv --verbose=4 "CLIAnywhere.app"
+          # notarize
+          zip -qr /tmp/notarize-amd64.zip "CLIAnywhere.app"
           xcrun notarytool submit /tmp/notarize-amd64.zip \
             --key /tmp/key.p8 --key-id "$KEY_ID" \
             --issuer "$ISSUER_ID" --team-id "$TEAM_ID" \
             --wait
           rm -f /tmp/notarize-amd64.zip
-          echo "Notarized: claw-macos-amd64"
+          # staple 票据到 .app
+          xcrun stapler staple "CLIAnywhere.app"
+          xcrun stapler validate "CLIAnywhere.app"
+          echo "Notarized: CLIAnywhere.app (amd64)"
 
-      - name: Sign and notarize claw (arm64)
+      - name: Sign and notarize CLIAnywhere.app (arm64)
         env:
           APPLE_P8: ${{ secrets.APPLE_P8 }}
         run: |
           set -e
           echo "$APPLE_P8" > /tmp/key.p8
+          tag="${{ needs.prepare.outputs.tag }}"
+          VER="${tag#v}"
           cd /tmp/release/arm64
-          codesign --sign "$CERT_CN" --options runtime --timestamp claw
-          codesign -dv claw
-          zip /tmp/notarize-arm64.zip claw
+          # 组装 .app bundle
+          mkdir -p "CLIAnywhere.app/Contents/MacOS"
+          cp claw "CLIAnywhere.app/Contents/MacOS/claw"
+          cp "${{ github.workspace }}/packaging/macos/Info.plist" "CLIAnywhere.app/Contents/Info.plist"
+          sed -i '' "s/VERSION_PLACEHOLDER/${VER}/g" "CLIAnywhere.app/Contents/Info.plist"
+          # 签名 .app
+          codesign --sign "$CERT_CN" --options runtime --timestamp \
+            --force --deep "CLIAnywhere.app"
+          codesign -dv --verbose=4 "CLIAnywhere.app"
+          # notarize
+          zip -qr /tmp/notarize-arm64.zip "CLIAnywhere.app"
           xcrun notarytool submit /tmp/notarize-arm64.zip \
             --key /tmp/key.p8 --key-id "$KEY_ID" \
             --issuer "$ISSUER_ID" --team-id "$TEAM_ID" \
             --wait
           rm -f /tmp/notarize-arm64.zip
-          echo "Notarized: claw-macos-arm64"
+          # staple 票据到 .app
+          xcrun stapler staple "CLIAnywhere.app"
+          xcrun stapler validate "CLIAnywhere.app"
+          echo "Notarized: CLIAnywhere.app (arm64)"
 
-      - name: Repackage and upload notarized binaries
+      - name: Repackage and upload notarized apps
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -e
           tag="${{ needs.prepare.outputs.tag }}"
-          # 删除旧包后全新打包，确保 zip 内只有签名+notarize 后的 claw
+          # 删除旧包后全新打包，zip 内只有签名+notarize+staple 后的 .app
           rm -f /tmp/archives/claw-macos-amd64.zip /tmp/archives/claw-macos-arm64.zip
-          (cd /tmp/release/amd64 && zip /tmp/archives/claw-macos-amd64.zip claw)
-          (cd /tmp/release/arm64 && zip /tmp/archives/claw-macos-arm64.zip claw)
+          (cd /tmp/release/amd64 && zip -qr /tmp/archives/claw-macos-amd64.zip "CLIAnywhere.app")
+          (cd /tmp/release/arm64 && zip -qr /tmp/archives/claw-macos-arm64.zip "CLIAnywhere.app")
           unzip -l /tmp/archives/claw-macos-amd64.zip
           unzip -l /tmp/archives/claw-macos-arm64.zip
           gh release upload "$tag" \
             /tmp/archives/claw-macos-amd64.zip \
             /tmp/archives/claw-macos-arm64.zip \
             -R "${{ github.repository }}" --clobber
-          echo "Uploaded notarized macOS binaries"
+          echo "Uploaded notarized CLIAnywhere.app binaries"
 
   finalize:
     name: Finalize
