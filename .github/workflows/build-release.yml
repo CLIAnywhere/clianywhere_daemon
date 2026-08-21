@@ -199,6 +199,23 @@ jobs:
           unzip -o /tmp/archives/claw-macos-arm64.zip -d /tmp/release/arm64
           ls -lh /tmp/release/amd64/claw /tmp/release/arm64/claw
 
+      - name: Build AppIcon.icns
+        run: |
+          set -e
+          ICONSET=/tmp/AppIcon.iconset
+          rm -rf "$ICONSET"
+          mkdir -p "$ICONSET"
+          # 用 sips 从 1024 源图生成各尺寸
+          for s in 16 32 128 256 512; do
+            sips -z $s $s "${{ github.workspace }}/packaging/macos/app_icon_1024.png" --out "$ICONSET/icon_${s}x${s}.png" >/dev/null
+            d=$((s*2))
+            sips -z $d $d "${{ github.workspace }}/packaging/macos/app_icon_1024.png" --out "$ICONSET/icon_${s}x${s}@2x.png" >/dev/null
+          done
+          # 1024 单独生成 @2x of 512
+          sips -z 1024 1024 "${{ github.workspace }}/packaging/macos/app_icon_1024.png" --out "$ICONSET/icon_512x512@2x.png" >/dev/null
+          iconutil -c icns "$ICONSET" -o /tmp/AppIcon.icns
+          ls -lh /tmp/AppIcon.icns
+
       - name: Decode p12 certificate
         env:
           APPLE_P12_B64: ${{ secrets.APPLE_P12 }}
@@ -237,9 +254,10 @@ jobs:
           VER="${tag#v}"
           cd /tmp/release/amd64
           # 组装 .app bundle
-          mkdir -p "CLIAnywhere.app/Contents/MacOS"
+          mkdir -p "CLIAnywhere.app/Contents/MacOS" "CLIAnywhere.app/Contents/Resources"
           cp claw "CLIAnywhere.app/Contents/MacOS/claw"
           cp "${{ github.workspace }}/packaging/macos/Info.plist" "CLIAnywhere.app/Contents/Info.plist"
+          cp /tmp/AppIcon.icns "CLIAnywhere.app/Contents/Resources/AppIcon.icns"
           sed -i '' "s/VERSION_PLACEHOLDER/${VER}/g" "CLIAnywhere.app/Contents/Info.plist"
           # 签名 .app
           codesign --sign "$CERT_CN" --options runtime --timestamp \
@@ -267,9 +285,10 @@ jobs:
           VER="${tag#v}"
           cd /tmp/release/arm64
           # 组装 .app bundle
-          mkdir -p "CLIAnywhere.app/Contents/MacOS"
+          mkdir -p "CLIAnywhere.app/Contents/MacOS" "CLIAnywhere.app/Contents/Resources"
           cp claw "CLIAnywhere.app/Contents/MacOS/claw"
           cp "${{ github.workspace }}/packaging/macos/Info.plist" "CLIAnywhere.app/Contents/Info.plist"
+          cp /tmp/AppIcon.icns "CLIAnywhere.app/Contents/Resources/AppIcon.icns"
           sed -i '' "s/VERSION_PLACEHOLDER/${VER}/g" "CLIAnywhere.app/Contents/Info.plist"
           # 签名 .app
           codesign --sign "$CERT_CN" --options runtime --timestamp \
