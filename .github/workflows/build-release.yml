@@ -235,6 +235,7 @@ jobs:
           APPLE_P8: ${{ secrets.APPLE_P8 }}
         run: |
           set -e
+          echo "$APPLE_P8" > /tmp/key.p8
           cd /tmp/release
           cp claw claw-macos-amd64
           codesign --sign "$CERT_CN" --options runtime --timestamp claw-macos-amd64
@@ -254,6 +255,7 @@ jobs:
           APPLE_P8: ${{ secrets.APPLE_P8 }}
         run: |
           set -e
+          echo "$APPLE_P8" > /tmp/key.p8
           cd /tmp/release
           cp claw claw-macos-arm64
           codesign --sign "$CERT_CN" --options runtime --timestamp claw-macos-arm64
