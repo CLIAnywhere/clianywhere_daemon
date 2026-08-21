@@ -194,6 +194,14 @@ jobs:
             -p "claw-macos-arm64.zip"
           ls -lh /tmp/release/
 
+      - name: Extract zipped binaries
+        run: |
+          cd /tmp/release
+          unzip -o claw-macos-amd64.zip
+          unzip -o claw-macos-arm64.zip
+          ls -lh claw
+          file claw
+
       - name: Decode p12 certificate
         env:
           APPLE_P12_B64: ${{ secrets.APPLE_P12 }}
