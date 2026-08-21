@@ -234,44 +234,50 @@ jobs:
         env:
           APPLE_P8: ${{ secrets.APPLE_P8 }}
         run: |
-          BIN=/tmp/release/claw
-          echo "$APPLE_P8" > /tmp/key.p8
-          codesign --sign "$CERT_CN" --options runtime --timestamp "$BIN"
-          codesign -dv --verbose=4 "$BIN"
-          xcrun notarytool submit "$BIN" \
+          set -e
+          cd /tmp/release
+          cp claw claw-macos-amd64
+          codesign --sign "$CERT_CN" --options runtime --timestamp claw-macos-amd64
+          codesign -dv --verbose=4 claw-macos-amd64
+          zip notarize-amd64.zip claw-macos-amd64
+          xcrun notarytool submit notarize-amd64.zip \
             --key /tmp/key.p8 \
             --key-id "$KEY_ID" \
             --issuer "$ISSUER_ID" \
             --team-id "$TEAM_ID" \
             --wait --verbose
-          xcrun stapler staple "$BIN"
+          rm -f claw-macos-amd64 notarize-amd64.zip
           echo "Notarized: claw-macos-amd64"
 
       - name: Sign and notarize claw (arm64)
         env:
           APPLE_P8: ${{ secrets.APPLE_P8 }}
         run: |
-          BIN=/tmp/release/claw
-          echo "$APPLE_P8" > /tmp/key.p8
-          codesign --sign "$CERT_CN" --options runtime --timestamp "$BIN"
-          codesign -dv --verbose=4 "$BIN"
-          xcrun notarytool submit "$BIN" \
+          set -e
+          cd /tmp/release
+          cp claw claw-macos-arm64
+          codesign --sign "$CERT_CN" --options runtime --timestamp claw-macos-arm64
+          codesign -dv --verbose=4 claw-macos-arm64
+          zip notarize-arm64.zip claw-macos-arm64
+          xcrun notarytool submit notarize-arm64.zip \
             --key /tmp/key.p8 \
             --key-id "$KEY_ID" \
             --issuer "$ISSUER_ID" \
             --team-id "$TEAM_ID" \
             --wait --verbose
-          xcrun stapler staple "$BIN"
+          xcrun stapler staple claw-macos-arm64
+          rm -f notarize-arm64.zip
           echo "Notarized: claw-macos-arm64"
 
       - name: Re-package and upload notarized binaries
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -e
           tag="${{ needs.prepare.outputs.tag }}"
           cd /tmp/release
-          zip claw-macos-amd64.zip claw-macos-amd64/claw
-          zip claw-macos-arm64.zip claw-macos-arm64/claw
+          zip claw-macos-amd64.zip claw-macos-amd64
+          zip claw-macos-arm64.zip claw-macos-arm64
           gh release upload "$tag" claw-macos-amd64.zip claw-macos-arm64.zip \
             -R "${{ github.repository }}" --clobber
           echo "Uploaded notarized macOS binaries"
