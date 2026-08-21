@@ -179,28 +179,25 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Download macOS artifacts
+      - name: Download and extract macOS artifacts
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -e
           tag="${{ needs.prepare.outputs.tag }}"
           gh release download "$tag" \
             -R "${{ github.repository }}" \
-            -D /tmp/release \
+            -D /tmp/archives \
             -p "claw-macos-amd64.zip"
           gh release download "$tag" \
             -R "${{ github.repository }}" \
-            -D /tmp/release \
+            -D /tmp/archives \
             -p "claw-macos-arm64.zip"
-          ls -lh /tmp/release/
-
-      - name: Extract zipped binaries
-        run: |
-          cd /tmp/release
-          unzip -o claw-macos-amd64.zip
-          unzip -o claw-macos-arm64.zip
-          ls -lh claw
-          file claw
+          # 每个架构解压到独立目录，避免同名 claw 互相覆盖
+          mkdir -p /tmp/release/amd64 /tmp/release/arm64
+          unzip -o /tmp/archives/claw-macos-amd64.zip -d /tmp/release/amd64
+          unzip -o /tmp/archives/claw-macos-arm64.zip -d /tmp/release/arm64
+          ls -lh /tmp/release/amd64/claw /tmp/release/arm64/claw
 
       - name: Decode p12 certificate
         env:
@@ -236,16 +233,15 @@ jobs:
         run: |
           set -e
           echo "$APPLE_P8" > /tmp/key.p8
-          cd /tmp/release
-          cp claw claw-macos-amd64
-          codesign --sign "$CERT_CN" --options runtime --timestamp claw-macos-amd64
-          codesign -dv claw-macos-amd64
-          zip notarize-amd64.zip claw-macos-amd64
-          xcrun notarytool submit notarize-amd64.zip \
+          cd /tmp/release/amd64
+          codesign --sign "$CERT_CN" --options runtime --timestamp claw
+          codesign -dv claw
+          zip /tmp/notarize-amd64.zip claw
+          xcrun notarytool submit /tmp/notarize-amd64.zip \
             --key /tmp/key.p8 --key-id "$KEY_ID" \
             --issuer "$ISSUER_ID" --team-id "$TEAM_ID" \
             --wait
-          rm -f notarize-amd64.zip
+          rm -f /tmp/notarize-amd64.zip
           echo "Notarized: claw-macos-amd64"
 
       - name: Sign and notarize claw (arm64)
@@ -254,28 +250,32 @@ jobs:
         run: |
           set -e
           echo "$APPLE_P8" > /tmp/key.p8
-          cd /tmp/release
-          cp claw claw-macos-arm64
-          codesign --sign "$CERT_CN" --options runtime --timestamp claw-macos-arm64
-          codesign -dv claw-macos-arm64
-          zip notarize-arm64.zip claw-macos-arm64
-          xcrun notarytool submit notarize-arm64.zip \
+          cd /tmp/release/arm64
+          codesign --sign "$CERT_CN" --options runtime --timestamp claw
+          codesign -dv claw
+          zip /tmp/notarize-arm64.zip claw
+          xcrun notarytool submit /tmp/notarize-arm64.zip \
             --key /tmp/key.p8 --key-id "$KEY_ID" \
             --issuer "$ISSUER_ID" --team-id "$TEAM_ID" \
             --wait
-          rm -f notarize-arm64.zip
+          rm -f /tmp/notarize-arm64.zip
           echo "Notarized: claw-macos-arm64"
 
-      - name: Re-package and upload notarized binaries
+      - name: Repackage and upload notarized binaries
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -e
           tag="${{ needs.prepare.outputs.tag }}"
-          cd /tmp/release
-          zip claw-macos-amd64.zip claw-macos-amd64
-          zip claw-macos-arm64.zip claw-macos-arm64
-          gh release upload "$tag" claw-macos-amd64.zip claw-macos-arm64.zip \
+          # 删除旧包后全新打包，确保 zip 内只有签名+notarize 后的 claw
+          rm -f /tmp/archives/claw-macos-amd64.zip /tmp/archives/claw-macos-arm64.zip
+          (cd /tmp/release/amd64 && zip /tmp/archives/claw-macos-amd64.zip claw)
+          (cd /tmp/release/arm64 && zip /tmp/archives/claw-macos-arm64.zip claw)
+          unzip -l /tmp/archives/claw-macos-amd64.zip
+          unzip -l /tmp/archives/claw-macos-arm64.zip
+          gh release upload "$tag" \
+            /tmp/archives/claw-macos-amd64.zip \
+            /tmp/archives/claw-macos-arm64.zip \
             -R "${{ github.repository }}" --clobber
           echo "Uploaded notarized macOS binaries"
 
