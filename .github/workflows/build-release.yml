@@ -226,7 +226,7 @@ jobs:
         env:
           APPLE_P8: ${{ secrets.APPLE_P8 }}
         run: |
-          BIN=/tmp/release/claw-macos-amd64/claw
+          BIN=/tmp/release/claw
           echo "$APPLE_P8" > /tmp/key.p8
           codesign --sign "$CERT_CN" --options runtime --timestamp "$BIN"
           codesign -dv --verbose=4 "$BIN"
@@ -243,7 +243,7 @@ jobs:
         env:
           APPLE_P8: ${{ secrets.APPLE_P8 }}
         run: |
-          BIN=/tmp/release/claw-macos-arm64/claw
+          BIN=/tmp/release/claw
           echo "$APPLE_P8" > /tmp/key.p8
           codesign --sign "$CERT_CN" --options runtime --timestamp "$BIN"
           codesign -dv --verbose=4 "$BIN"
