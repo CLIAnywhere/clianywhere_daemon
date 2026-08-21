@@ -1,5 +1,6 @@
 #!/bin/bash
-# Build claw (web) for macOS — output: ./claw in script dir.
+# Build claw (web) for macOS — output: ./CLIAnywhere.app in script dir.
+# (bundles claw binary + Info.plist + AppIcon.icns)
 set -e
 cd "$(dirname "$0")"
 
@@ -45,4 +46,31 @@ echo "[go] ${GO_VERSION} detected, OK."
 # --- Build ------------------------------------------------------------------
 echo "[build] claw (darwin/$(go env GOARCH), web)"
 GOOS=darwin GOARCH="$(go env GOARCH)" go build -tags web -o claw ./cmd/claw
-echo "[done]  $(pwd)/claw"
+
+# --- Package .app bundle ----------------------------------------------------
+# 组装 CLIAnywhere.app 结构，输出到当前目录
+APP="CLIAnywhere.app"
+rm -rf "$APP"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+
+cp claw "$APP/Contents/MacOS/claw"
+cp packaging/macos/Info.plist "$APP/Contents/Info.plist"
+
+# 生成 AppIcon.icns（若 iconutil 可用）
+ICONSET=/tmp/AppIcon.iconset
+rm -rf "$ICONSET"
+mkdir -p "$ICONSET"
+for s in 16 32 128 256 512; do
+    sips -z $s $s packaging/macos/app_icon_1024.png --out "$ICONSET/icon_${s}x${s}.png" >/dev/null
+    d=$((s*2))
+    sips -z $d $d packaging/macos/app_icon_1024.png --out "$ICONSET/icon_${s}x${s}@2x.png" >/dev/null
+done
+sips -z 1024 1024 packaging/macos/app_icon_1024.png --out "$ICONSET/icon_512x512@2x.png" >/dev/null
+iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
+rm -rf "$ICONSET"
+
+# 填入版本号（占位符 -> 日期版本）
+VER="$(date +%Y%m%d)"
+sed -i '' "s/VERSION_PLACEHOLDER/${VER}/g" "$APP/Contents/Info.plist"
+
+echo "[done]  $(pwd)/$APP"
