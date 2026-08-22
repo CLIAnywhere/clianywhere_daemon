@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // userDesktopPath returns ~/Desktop on macOS. The user's home directory is
@@ -22,33 +23,67 @@ func userDesktopPath() (string, error) {
 	return "", fmt.Errorf("desktop directory not found")
 }
 
-// createDesktopShortcut writes a .command file on the user's desktop that
-// launches the daemon executable. Double-clicking opens Terminal, which stays
-// attached to the daemon (intentional — user sees logs, Ctrl+C to stop).
+// appBundlePath reports the enclosing .app bundle root when exePath lives inside
+// one (e.g. CLIAnywhere.app/Contents/MacOS/claw), otherwise returns "".
+func appBundlePath(exePath string) string {
+	const marker = ".app" + string(filepath.Separator) + "Contents" + string(filepath.Separator) + "MacOS"
+	if i := strings.LastIndex(exePath, marker); i >= 0 {
+		return exePath[:i+len(".app")]
+	}
+	return ""
+}
+
+// createDesktopShortcut puts a launcher on the user's desktop.
+//
+// When running from a packaged CLIAnywhere.app (the current distribution) it
+// symlinks the bundle onto the desktop so double-click launches the real app
+// via LaunchServices and Finder shows the app icon. A bare binary build
+// (go build / go run) still gets the legacy .command script that opens Terminal
+// and execs the binary, keeping logs visible with Ctrl+C to stop.
 func createDesktopShortcut() error {
 	exePath, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("resolve exe: %w", err)
 	}
-	// Resolve symlinks so the script points at the real binary (homebrew, etc.).
+	// Resolve symlinks so the path points at the real binary (homebrew, etc.).
 	if real, err := filepath.EvalSymlinks(exePath); err == nil {
 		exePath = real
 	}
-	workDir := filepath.Dir(exePath)
 
 	desktop, err := userDesktopPath()
 	if err != nil {
 		return fmt.Errorf("resolve desktop: %w", err)
 	}
 
-	// 固定文件名为 CLIAnywhere.command，Finder 里直接显示为 CLIAnywhere。
-	commandPath := filepath.Join(desktop, "CLIAnywhere.command")
+	// Packaged .app: put a symlink to the bundle on the desktop.
+	if appPath := appBundlePath(exePath); appPath != "" {
+		// Remove the legacy .command entry so we don't leave a second launcher
+		// pointing at the bare binary. Best-effort.
+		_ = os.Remove(filepath.Join(desktop, "CLIAnywhere.command"))
 
-	// Shell script content: cd to the binary's dir, exec it so Terminal's
-	// process is the daemon itself — Ctrl+C in Terminal kills daemon cleanly.
+		linkPath := filepath.Join(desktop, "CLIAnywhere.app")
+		if fi, err := os.Lstat(linkPath); err == nil {
+			if fi.Mode()&os.ModeSymlink == 0 {
+				// A real file/dir already occupies the name; refuse to clobber it.
+				return fmt.Errorf("%s exists and is not a symlink", linkPath)
+			}
+			// Rebuild the old symlink so it points at the current bundle.
+			if err := os.Remove(linkPath); err != nil {
+				return fmt.Errorf("replace old symlink: %w", err)
+			}
+		}
+		if err := os.Symlink(appPath, linkPath); err != nil {
+			return fmt.Errorf("symlink .app: %w", err)
+		}
+		return nil
+	}
+
+	// Bare binary: legacy .command script so Terminal stays attached (logs,
+	// Ctrl+C to stop).
+	workDir := filepath.Dir(exePath)
+	commandPath := filepath.Join(desktop, "CLIAnywhere.command")
 	script := fmt.Sprintf("#!/bin/bash\n# CliAnyWhere launcher\ncd %q\nexec %q\n",
 		workDir, exePath)
-
 	if err := os.WriteFile(commandPath, []byte(script), 0o755); err != nil {
 		return fmt.Errorf("write .command: %w", err)
 	}

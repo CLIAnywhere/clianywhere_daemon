@@ -193,7 +193,7 @@ jobs:
             -R "${{ github.repository }}" \
             -D /tmp/archives \
             -p "claw-macos-arm64.zip"
-          # 每个架构解压到独立目录，避免同名 claw 互相覆盖
+          # Extract each arch into its own dir so same-named claw does not overwrite
           mkdir -p /tmp/release/amd64 /tmp/release/arm64
           unzip -o /tmp/archives/claw-macos-amd64.zip -d /tmp/release/amd64
           unzip -o /tmp/archives/claw-macos-arm64.zip -d /tmp/release/arm64
@@ -205,13 +205,13 @@ jobs:
           ICONSET=/tmp/AppIcon.iconset
           rm -rf "$ICONSET"
           mkdir -p "$ICONSET"
-          # 用 sips 从 1024 源图生成各尺寸
+          # Use sips to generate each size from the 1024 source image
           for s in 16 32 128 256 512; do
             sips -z $s $s "${{ github.workspace }}/packaging/macos/app_icon_1024.png" --out "$ICONSET/icon_${s}x${s}.png" >/dev/null
             d=$((s*2))
             sips -z $d $d "${{ github.workspace }}/packaging/macos/app_icon_1024.png" --out "$ICONSET/icon_${s}x${s}@2x.png" >/dev/null
           done
-          # 1024 单独生成 @2x of 512
+          # Generate 1024 separately as the @2x of 512
           sips -z 1024 1024 "${{ github.workspace }}/packaging/macos/app_icon_1024.png" --out "$ICONSET/icon_512x512@2x.png" >/dev/null
           iconutil -c icns "$ICONSET" -o /tmp/AppIcon.icns
           ls -lh /tmp/AppIcon.icns
@@ -253,13 +253,13 @@ jobs:
           tag="${{ needs.prepare.outputs.tag }}"
           VER="${tag#v}"
           cd /tmp/release/amd64
-          # 组装 .app bundle
+          # Assemble .app bundle
           mkdir -p "CLIAnywhere.app/Contents/MacOS" "CLIAnywhere.app/Contents/Resources"
           cp claw "CLIAnywhere.app/Contents/MacOS/claw"
           cp "${{ github.workspace }}/packaging/macos/Info.plist" "CLIAnywhere.app/Contents/Info.plist"
           cp /tmp/AppIcon.icns "CLIAnywhere.app/Contents/Resources/AppIcon.icns"
           sed -i '' "s/VERSION_PLACEHOLDER/${VER}/g" "CLIAnywhere.app/Contents/Info.plist"
-          # 签名 .app
+          # Sign .app
           codesign --sign "$CERT_CN" --options runtime --timestamp \
             --force --deep "CLIAnywhere.app"
           codesign -dv --verbose=4 "CLIAnywhere.app"
@@ -270,7 +270,7 @@ jobs:
             --issuer "$ISSUER_ID" --team-id "$TEAM_ID" \
             --wait
           rm -f /tmp/notarize-amd64.zip
-          # staple 票据到 .app
+          # Staple ticket to .app
           xcrun stapler staple "CLIAnywhere.app"
           xcrun stapler validate "CLIAnywhere.app"
           echo "Notarized: CLIAnywhere.app (amd64)"
@@ -284,13 +284,13 @@ jobs:
           tag="${{ needs.prepare.outputs.tag }}"
           VER="${tag#v}"
           cd /tmp/release/arm64
-          # 组装 .app bundle
+          # Assemble .app bundle
           mkdir -p "CLIAnywhere.app/Contents/MacOS" "CLIAnywhere.app/Contents/Resources"
           cp claw "CLIAnywhere.app/Contents/MacOS/claw"
           cp "${{ github.workspace }}/packaging/macos/Info.plist" "CLIAnywhere.app/Contents/Info.plist"
           cp /tmp/AppIcon.icns "CLIAnywhere.app/Contents/Resources/AppIcon.icns"
           sed -i '' "s/VERSION_PLACEHOLDER/${VER}/g" "CLIAnywhere.app/Contents/Info.plist"
-          # 签名 .app
+          # Sign .app
           codesign --sign "$CERT_CN" --options runtime --timestamp \
             --force --deep "CLIAnywhere.app"
           codesign -dv --verbose=4 "CLIAnywhere.app"
@@ -301,7 +301,7 @@ jobs:
             --issuer "$ISSUER_ID" --team-id "$TEAM_ID" \
             --wait
           rm -f /tmp/notarize-arm64.zip
-          # staple 票据到 .app
+          # Staple ticket to .app
           xcrun stapler staple "CLIAnywhere.app"
           xcrun stapler validate "CLIAnywhere.app"
           echo "Notarized: CLIAnywhere.app (arm64)"
@@ -312,7 +312,7 @@ jobs:
         run: |
           set -e
           tag="${{ needs.prepare.outputs.tag }}"
-          # 删除旧包后全新打包，zip 内只有签名+notarize+staple 后的 .app
+          # Remove old packages and repackage fresh: zip contains only the signed/notarized/staple .app
           rm -f /tmp/archives/claw-macos-amd64.zip /tmp/archives/claw-macos-arm64.zip
           (cd /tmp/release/amd64 && zip -qr /tmp/archives/claw-macos-amd64.zip "CLIAnywhere.app")
           (cd /tmp/release/arm64 && zip -qr /tmp/archives/claw-macos-arm64.zip "CLIAnywhere.app")

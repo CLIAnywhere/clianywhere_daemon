@@ -48,7 +48,7 @@ echo "[build] claw (darwin/$(go env GOARCH), web)"
 GOOS=darwin GOARCH="$(go env GOARCH)" go build -tags web -o claw ./cmd/claw
 
 # --- Package .app bundle ----------------------------------------------------
-# 组装 CLIAnywhere.app 结构，输出到当前目录
+# Assemble the CLIAnywhere.app bundle, output to the current directory
 APP="CLIAnywhere.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
@@ -56,7 +56,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp claw "$APP/Contents/MacOS/claw"
 cp packaging/macos/Info.plist "$APP/Contents/Info.plist"
 
-# 生成 AppIcon.icns（若 iconutil 可用）
+# Generate AppIcon.icns (if iconutil is available)
 ICONSET=/tmp/AppIcon.iconset
 rm -rf "$ICONSET"
 mkdir -p "$ICONSET"
@@ -69,7 +69,7 @@ sips -z 1024 1024 packaging/macos/app_icon_1024.png --out "$ICONSET/icon_512x512
 iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
 rm -rf "$ICONSET"
 
-# 填入版本号（占位符 -> 日期版本）
+# Fill in the version number (placeholder -> date version)
 VER="$(date +%Y%m%d)"
 sed -i '' "s/VERSION_PLACEHOLDER/${VER}/g" "$APP/Contents/Info.plist"
 
