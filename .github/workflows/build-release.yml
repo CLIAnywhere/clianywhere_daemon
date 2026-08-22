@@ -288,6 +288,8 @@ jobs:
           "${{ github.workspace }}/packaging/macos/make-dmg.sh" \
             "CLIAnywhere.app" \
             "CLIAnywhere.dmg"
+          # Sign the DMG itself so Gatekeeper/spctl sees a usable signature.
+          codesign --sign "$CERT_CN" --options runtime --timestamp "CLIAnywhere.dmg"
           # Notarize the DMG (the distributed artifact)
           xcrun notarytool submit "CLIAnywhere.dmg" \
             --key /tmp/key.p8 --key-id "$KEY_ID" \
