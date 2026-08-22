@@ -17,6 +17,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"math/rand"
+
 	"github.com/pion/webrtc/v3"
 )
 
@@ -53,19 +55,19 @@ type Daemon struct {
 	// secCodeVerified: 1=current app has verified, 0=not yet (reset on peer_online/p2p_offer/code change)
 	// secCodeAttemptsLeft: consecutive failed-verify budget — once it hits 0 the
 	//   daemon exits. Reset to MaxSecCodeAttempts on a successful handshake.
-	secCodeEnabled       int32
-	secCodeVerified      int32
-	secCodeAttemptsLeft  int32
+	secCodeEnabled      int32
+	secCodeVerified     int32
+	secCodeAttemptsLeft int32
 
 	// E2E secure channel (SPAKE2 + AES-GCM). secure is nil until a handshake
 	// completes; the single-slot handshake fields track one in-progress SPAKE2
 	// server exchange (a new pake_start overwrites any previous one).
-	secure       *SecureChannel
-	secureMu     sync.Mutex
-	pakeServer   *Spake2State
-	pakeSid      []byte
+	secure        *SecureChannel
+	secureMu      sync.Mutex
+	pakeServer    *Spake2State
+	pakeSid       []byte
 	pakeAccessKey string
-	pakeTimer    *time.Timer
+	pakeTimer     *time.Timer
 
 	// set of sessions subscribed by frontend: only sessions that went through request_history receive real-time output
 	subscribed map[string]bool
@@ -86,8 +88,8 @@ type Daemon struct {
 	connState atomic.Value // string: "stopped", "connecting", "connected"
 
 	// stop signal: Stop() closes this channel, startTSRelay exits loop on detection
-	stopCh    chan struct{}
-	stopOnce  sync.Once
+	stopCh   chan struct{}
+	stopOnce sync.Once
 
 	// TS relay loop lifecycle: per-loop cancel + done channel so that
 	// replacing accesskey can synchronously stop the old loop before
@@ -320,7 +322,6 @@ func (d *Daemon) startP2PAsAnswerer(sdpOffer string, earlyICE []map[string]any) 
 		return
 	}
 
-
 	// block until P2P disconnects
 	rtc.WaitDisconnected()
 
@@ -455,6 +456,13 @@ func (d *Daemon) startTSRelay() {
 	}()
 }
 
+// reconnectDelay random backoff before retrying TS connection (8-15s).
+// Randomized so that when one heavily loaded turn server dies, all daemons
+// behind it do not reconnect to other servers at the same instant (thundering herd).
+func reconnectDelay() time.Duration {
+	return time.Duration(8+rand.Intn(8)) * time.Second
+}
+
 // tsRelayLoop background manager for TurnServer WebSocket connection (direct connect + auto-reconnect)
 // exits when stopCh is closed, the per-loop ctx is canceled (accesskey swap), or login fatally fails.
 func (d *Daemon) tsRelayLoop(ctx context.Context) {
@@ -475,7 +483,7 @@ func (d *Daemon) tsRelayLoop(ctx context.Context) {
 		best, err := SelectBestTurnServer(d.logger)
 		if err != nil {
 			d.logger.Errorf("[TS] select turn server failed: %v", err)
-			switch d.sleepOrStopCtx(ctx, 10*time.Second) {
+			switch d.sleepOrStopCtx(ctx, reconnectDelay()) {
 			case tsSleepStop:
 				d.notifyState("stopped")
 				return
@@ -486,7 +494,7 @@ func (d *Daemon) tsRelayLoop(ctx context.Context) {
 		}
 		if best == nil {
 			d.logger.Errorf("[TS] no turn server available")
-			switch d.sleepOrStopCtx(ctx, 10*time.Second) {
+			switch d.sleepOrStopCtx(ctx, reconnectDelay()) {
 			case tsSleepStop:
 				d.notifyState("stopped")
 				return
@@ -531,7 +539,7 @@ func (d *Daemon) tsRelayLoop(ctx context.Context) {
 			}
 			// other connection errors: retry
 			d.logger.Errorf("[TS] connection failed: %v", err)
-			switch d.sleepOrStopCtx(ctx, 10*time.Second) {
+			switch d.sleepOrStopCtx(ctx, reconnectDelay()) {
 			case tsSleepStop:
 				d.notifyState("stopped")
 				return
@@ -564,7 +572,6 @@ func (d *Daemon) tsRelayLoop(ctx context.Context) {
 			// canceled by restart; daemon stays alive, do not notify stopped
 			return
 		}
-
 
 		// TS disconnected, cancel all in-progress file transfers
 		if d.fileTransfer != nil {
@@ -1577,4 +1584,3 @@ func (d *Daemon) startIPCServer() {
 	}
 
 }
-
