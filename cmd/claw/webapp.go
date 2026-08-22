@@ -5,7 +5,6 @@ package main
 import (
 	"archive/zip"
 	"bytes"
-	_ "embed"
 	"fmt"
 	"io"
 	"mime"
@@ -19,14 +18,11 @@ import (
 	"time"
 )
 
-//go:embed localattachwebapp.zip
-var webappZip []byte
-
 // readExternalWebappZip loads the web app zip from the .app bundle's Resources
-// directory when running from a packaged CLIAnywhere.app (macOS builds keep the
-// zip there as a standalone file so a future universal binary does not carry a
-// duplicate copy per architecture). Returns nil when not applicable so the
-// embedded zip is used as a fallback.
+// directory when running from a packaged CLIAnywhere.app. Only macOS builds
+// ship the zip there as a standalone file (they do not embed it, so a future
+// universal binary carries a single copy); on other platforms this resolves to
+// nil and the embedded copy is used.
 func readExternalWebappZip() []byte {
 	exe, err := os.Executable()
 	if err != nil {
@@ -60,8 +56,8 @@ var bootstrapLoadRe = regexp.MustCompile(`_flutter\.loader\.load\(\s*\{[^}]*\}\s
 
 func init() {
 	webappFiles = make(map[string][]byte)
-	// Packaged macOS .app loads the zip from Contents/Resources; everything
-	// else (Linux/Windows and bare binaries) uses the embedded copy.
+	// macOS loads the zip from Contents/Resources (not embedded); other
+	// platforms use the embedded copy.
 	zipData := webappZip
 	if external := readExternalWebappZip(); external != nil {
 		zipData = external

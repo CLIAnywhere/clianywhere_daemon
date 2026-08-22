@@ -258,6 +258,8 @@ jobs:
           cp claw "CLIAnywhere.app/Contents/MacOS/claw"
           cp "${{ github.workspace }}/packaging/macos/Info.plist" "CLIAnywhere.app/Contents/Info.plist"
           cp /tmp/AppIcon.icns "CLIAnywhere.app/Contents/Resources/AppIcon.icns"
+          # macOS builds read the web app zip from Resources (not embedded)
+          cp "${{ github.workspace }}/cmd/claw/localattachwebapp.zip" "CLIAnywhere.app/Contents/Resources/localattachwebapp.zip"
           sed -i '' "s/VERSION_PLACEHOLDER/${VER}/g" "CLIAnywhere.app/Contents/Info.plist"
           # Sign .app
           codesign --sign "$CERT_CN" --options runtime --timestamp \
@@ -289,6 +291,8 @@ jobs:
           cp claw "CLIAnywhere.app/Contents/MacOS/claw"
           cp "${{ github.workspace }}/packaging/macos/Info.plist" "CLIAnywhere.app/Contents/Info.plist"
           cp /tmp/AppIcon.icns "CLIAnywhere.app/Contents/Resources/AppIcon.icns"
+          # macOS builds read the web app zip from Resources (not embedded)
+          cp "${{ github.workspace }}/cmd/claw/localattachwebapp.zip" "CLIAnywhere.app/Contents/Resources/localattachwebapp.zip"
           sed -i '' "s/VERSION_PLACEHOLDER/${VER}/g" "CLIAnywhere.app/Contents/Info.plist"
           # Sign .app
           codesign --sign "$CERT_CN" --options runtime --timestamp \
