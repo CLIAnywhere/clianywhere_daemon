@@ -19,7 +19,9 @@ fi
 STAGE_ROOT="$(mktemp -d)"
 STAGE="$STAGE_ROOT/dmg"
 mkdir -p "$STAGE/.background"
-cp -R "$APP" "$STAGE/CLIAnywhere.app"
+# ditto preserves the notarization ticket (xattr/bundle files) inside the .app;
+# a plain cp -R may drop extended attributes.
+ditto "$APP" "$STAGE/CLIAnywhere.app"
 ln -s /Applications "$STAGE/Applications"
 cp "$BG" "$STAGE/.background/dmg-background.png"
 

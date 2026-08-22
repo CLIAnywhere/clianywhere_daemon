@@ -274,6 +274,16 @@ jobs:
           codesign --sign "$CERT_CN" --options runtime --timestamp \
             --force --deep "CLIAnywhere.app"
           codesign -dv --verbose=4 "CLIAnywhere.app"
+          # Notarize + staple the .app so a copy extracted from the DMG is
+          # verifiable offline too (ticket lives inside the bundle).
+          zip -qr /tmp/notarize-app.zip "CLIAnywhere.app"
+          xcrun notarytool submit /tmp/notarize-app.zip \
+            --key /tmp/key.p8 --key-id "$KEY_ID" \
+            --issuer "$ISSUER_ID" --team-id "$TEAM_ID" \
+            --wait
+          rm -f /tmp/notarize-app.zip
+          xcrun stapler staple "CLIAnywhere.app"
+          xcrun stapler validate "CLIAnywhere.app"
           # Build DMG with drag-to-Applications layout
           "${{ github.workspace }}/packaging/macos/make-dmg.sh" \
             "CLIAnywhere.app" \
@@ -286,7 +296,7 @@ jobs:
           # Staple the notarization ticket into the DMG
           xcrun stapler staple "CLIAnywhere.dmg"
           xcrun stapler validate "CLIAnywhere.dmg"
-          echo "Notarized: CLIAnywhere.dmg"
+          echo "Notarized: CLIAnywhere.dmg (app + dmg)"
 
       - name: Upload notarized DMG
         env:
