@@ -10,8 +10,7 @@ name: Build Release
 #
 # Artifacts:
 #   claw-windows.zip             (Windows GUI, -H windowsgui)
-#   CLIAnywhere-amd64.dmg        (macOS Intel, signed + notarized)
-#   CLIAnywhere-arm64.dmg        (macOS Apple Silicon, signed + notarized)
+#   CLIAnywhere.dmg              (macOS universal Intel+Apple Silicon, signed + notarized)
 #   claw-linux-desktop-amd64.zip (Linux web)
 #   claw-linux-cli-amd64.zip     (Linux CLI)
 
@@ -244,7 +243,17 @@ jobs:
           echo "--- Available identities ---"
           security find-identity -v -p codesigning "$KEYCHAIN_PATH"
 
-      - name: Sign and notarize CLIAnywhere.app (amd64)
+      - name: Merge universal binary
+        run: |
+          set -e
+          mkdir -p /tmp/release/universal
+          lipo -create \
+            /tmp/release/amd64/claw \
+            /tmp/release/arm64/claw \
+            -output /tmp/release/universal/claw
+          file /tmp/release/universal/claw
+
+      - name: Sign, notarize and staple CLIAnywhere.dmg
         env:
           APPLE_P8: ${{ secrets.APPLE_P8 }}
         run: |
@@ -252,8 +261,8 @@ jobs:
           echo "$APPLE_P8" > /tmp/key.p8
           tag="${{ needs.prepare.outputs.tag }}"
           VER="${tag#v}"
-          cd /tmp/release/amd64
-          # Assemble .app bundle
+          cd /tmp/release/universal
+          # Assemble .app bundle (universal binary)
           mkdir -p "CLIAnywhere.app/Contents/MacOS" "CLIAnywhere.app/Contents/Resources"
           cp claw "CLIAnywhere.app/Contents/MacOS/claw"
           cp "${{ github.workspace }}/packaging/macos/Info.plist" "CLIAnywhere.app/Contents/Info.plist"
@@ -268,68 +277,32 @@ jobs:
           # Build DMG
           hdiutil create -volname "CLIAnywhere" \
             -srcfolder "CLIAnywhere.app" \
-            -ov -format UDZO "CLIAnywhere-amd64.dmg"
+            -ov -format UDZO "CLIAnywhere.dmg"
           # Notarize the DMG (the distributed artifact)
-          xcrun notarytool submit "CLIAnywhere-amd64.dmg" \
+          xcrun notarytool submit "CLIAnywhere.dmg" \
             --key /tmp/key.p8 --key-id "$KEY_ID" \
             --issuer "$ISSUER_ID" --team-id "$TEAM_ID" \
             --wait
           # Staple the notarization ticket into the DMG
-          xcrun stapler staple "CLIAnywhere-amd64.dmg"
-          xcrun stapler validate "CLIAnywhere-amd64.dmg"
-          echo "Notarized: CLIAnywhere-amd64.dmg"
+          xcrun stapler staple "CLIAnywhere.dmg"
+          xcrun stapler validate "CLIAnywhere.dmg"
+          echo "Notarized: CLIAnywhere.dmg"
 
-      - name: Sign and notarize CLIAnywhere.app (arm64)
-        env:
-          APPLE_P8: ${{ secrets.APPLE_P8 }}
-        run: |
-          set -e
-          echo "$APPLE_P8" > /tmp/key.p8
-          tag="${{ needs.prepare.outputs.tag }}"
-          VER="${tag#v}"
-          cd /tmp/release/arm64
-          # Assemble .app bundle
-          mkdir -p "CLIAnywhere.app/Contents/MacOS" "CLIAnywhere.app/Contents/Resources"
-          cp claw "CLIAnywhere.app/Contents/MacOS/claw"
-          cp "${{ github.workspace }}/packaging/macos/Info.plist" "CLIAnywhere.app/Contents/Info.plist"
-          cp /tmp/AppIcon.icns "CLIAnywhere.app/Contents/Resources/AppIcon.icns"
-          # macOS builds read the web app zip from Resources (not embedded)
-          cp "${{ github.workspace }}/cmd/claw/localattachwebapp.zip" "CLIAnywhere.app/Contents/Resources/localattachwebapp.zip"
-          sed -i '' "s/VERSION_PLACEHOLDER/${VER}/g" "CLIAnywhere.app/Contents/Info.plist"
-          # Sign .app
-          codesign --sign "$CERT_CN" --options runtime --timestamp \
-            --force --deep "CLIAnywhere.app"
-          codesign -dv --verbose=4 "CLIAnywhere.app"
-          # Build DMG
-          hdiutil create -volname "CLIAnywhere" \
-            -srcfolder "CLIAnywhere.app" \
-            -ov -format UDZO "CLIAnywhere-arm64.dmg"
-          # Notarize the DMG (the distributed artifact)
-          xcrun notarytool submit "CLIAnywhere-arm64.dmg" \
-            --key /tmp/key.p8 --key-id "$KEY_ID" \
-            --issuer "$ISSUER_ID" --team-id "$TEAM_ID" \
-            --wait
-          # Staple the notarization ticket into the DMG
-          xcrun stapler staple "CLIAnywhere-arm64.dmg"
-          xcrun stapler validate "CLIAnywhere-arm64.dmg"
-          echo "Notarized: CLIAnywhere-arm64.dmg"
-
-      - name: Upload notarized DMGs
+      - name: Upload notarized DMG
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -e
           tag="${{ needs.prepare.outputs.tag }}"
-          # The raw un-notarized binary zips are superseded by the DMGs.
+          # The raw un-notarized binary zips are superseded by the universal DMG.
           for asset in claw-macos-amd64.zip claw-macos-arm64.zip; do
             gh release delete-asset "$tag" "$asset" \
               -R "${{ github.repository }}" --yes || true
           done
           gh release upload "$tag" \
-            /tmp/release/amd64/CLIAnywhere-amd64.dmg \
-            /tmp/release/arm64/CLIAnywhere-arm64.dmg \
+            /tmp/release/universal/CLIAnywhere.dmg \
             -R "${{ github.repository }}" --clobber
-          echo "Uploaded notarized CLIAnywhere DMGs"
+          echo "Uploaded notarized CLIAnywhere.dmg"
 
   finalize:
     name: Finalize
