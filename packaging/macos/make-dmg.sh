@@ -10,6 +10,7 @@ OUT="$2"
 VOLNAME="CLIAnywhere"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BG="$SCRIPT_DIR/dmg-background.png"
+BG_2X="$SCRIPT_DIR/dmg-background@2x.png"
 
 if [ -z "$APP" ] || [ -z "$OUT" ]; then
     echo "usage: $0 <app-bundle> <output.dmg>" >&2
@@ -23,7 +24,10 @@ mkdir -p "$STAGE/.background"
 # a plain cp -R may drop extended attributes.
 ditto "$APP" "$STAGE/CLIAnywhere.app"
 ln -s /Applications "$STAGE/Applications"
+# 1x + @2x background: Finder picks the right one per screen so the window
+# always maps 1:1 to the design size (660x400) regardless of display scale.
 cp "$BG" "$STAGE/.background/dmg-background.png"
+cp "$BG_2X" "$STAGE/.background/dmg-background@2x.png"
 
 TMP_DMG="$STAGE_ROOT/tmp.dmg"
 MOUNT_POINT="/Volumes/$VOLNAME"
@@ -41,16 +45,18 @@ osascript <<'EOF'
 tell application "Finder"
     tell disk "CLIAnywhere"
         open
+        delay 1
         set current view of container window to icon view
         set toolbar visible of container window to false
         set statusbar visible of container window to false
-        set the bounds of container window to {0, 0, 660, 400}
         set viewOptions to the icon view options of container window
         set arrangement of viewOptions to not arranged
         set icon size of viewOptions to 96
         set background picture of viewOptions to file ".background:dmg-background.png"
+        set the bounds of container window to {80, 80, 740, 480}
         set position of item "CLIAnywhere.app" of container window to {120, 200}
         set position of item "Applications" of container window to {440, 200}
+        delay 1
         close
     end tell
 end tell
