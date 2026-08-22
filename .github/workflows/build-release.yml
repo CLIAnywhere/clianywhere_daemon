@@ -10,7 +10,7 @@ name: Build Release
 #
 # Artifacts:
 #   claw-windows.zip             (Windows GUI, -H windowsgui)
-#   CLIAnywhere.dmg              (macOS universal Intel+Apple Silicon, signed + notarized)
+#   CLIAnywhere-macos.dmg              (macOS universal Intel+Apple Silicon, signed + notarized)
 #   claw-linux-desktop-amd64.zip (Linux web)
 #   claw-linux-cli-amd64.zip     (Linux CLI)
 
@@ -253,7 +253,7 @@ jobs:
             -output /tmp/release/universal/claw
           file /tmp/release/universal/claw
 
-      - name: Sign, notarize and staple CLIAnywhere.dmg
+      - name: Sign, notarize and staple CLIAnywhere-macos.dmg
         env:
           APPLE_P8: ${{ secrets.APPLE_P8 }}
         run: |
@@ -287,18 +287,18 @@ jobs:
           # Build DMG with drag-to-Applications layout
           "${{ github.workspace }}/packaging/macos/make-dmg.sh" \
             "CLIAnywhere.app" \
-            "CLIAnywhere.dmg"
+            "CLIAnywhere-macos.dmg"
           # Sign the DMG itself so Gatekeeper/spctl sees a usable signature.
-          codesign --sign "$CERT_CN" --options runtime --timestamp "CLIAnywhere.dmg"
+          codesign --sign "$CERT_CN" --options runtime --timestamp "CLIAnywhere-macos.dmg"
           # Notarize the DMG (the distributed artifact)
-          xcrun notarytool submit "CLIAnywhere.dmg" \
+          xcrun notarytool submit "CLIAnywhere-macos.dmg" \
             --key /tmp/key.p8 --key-id "$KEY_ID" \
             --issuer "$ISSUER_ID" --team-id "$TEAM_ID" \
             --wait
           # Staple the notarization ticket into the DMG
-          xcrun stapler staple "CLIAnywhere.dmg"
-          xcrun stapler validate "CLIAnywhere.dmg"
-          echo "Notarized: CLIAnywhere.dmg (app + dmg)"
+          xcrun stapler staple "CLIAnywhere-macos.dmg"
+          xcrun stapler validate "CLIAnywhere-macos.dmg"
+          echo "Notarized: CLIAnywhere-macos.dmg (app + dmg)"
 
       - name: Upload notarized DMG
         env:
@@ -312,9 +312,9 @@ jobs:
               -R "${{ github.repository }}" --yes || true
           done
           gh release upload "$tag" \
-            /tmp/release/universal/CLIAnywhere.dmg \
+            /tmp/release/universal/CLIAnywhere-macos.dmg \
             -R "${{ github.repository }}" --clobber
-          echo "Uploaded notarized CLIAnywhere.dmg"
+          echo "Uploaded notarized CLIAnywhere-macos.dmg"
 
   finalize:
     name: Finalize
