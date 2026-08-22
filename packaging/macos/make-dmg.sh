@@ -54,8 +54,8 @@ tell application "Finder"
         set icon size of viewOptions to 96
         set background picture of viewOptions to file ".background:dmg-background.png"
         set the bounds of container window to {80, 80, 740, 480}
-        set position of item "CLIAnywhere.app" of container window to {120, 160}
-        set position of item "Applications" of container window to {430, 160}
+        set position of item "CLIAnywhere.app" of container window to {80, 150}
+        set position of item "Applications" of container window to {480, 150}
         delay 1
         close
     end tell
