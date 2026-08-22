@@ -4,9 +4,11 @@ package main
 
 import (
 	"fmt"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // webapp port file: ~/.clianywhere/webapp.port
@@ -40,6 +42,14 @@ func webappPortPath() (string, error) {
 		return "", err
 	}
 	return home + "/.clianywhere/webapp.port", nil
+}
+
+// notifyBrowserLaunched tells the daemon serving url that a browser was just
+// opened for it, so it starts the attach watch (see StartBrowserWatch).
+// Synchronous with a short timeout: the caller typically exits right after.
+func notifyBrowserLaunched(url string) {
+	client := &http.Client{Timeout: 2 * time.Second}
+	client.Get(url + "/browser-launched") //nolint:errcheck
 }
 
 func main() {
@@ -92,6 +102,7 @@ func main() {
 		url := fmt.Sprintf("http://127.0.0.1:%d", webPort)
 		fmt.Printf("Already running: %s\n", url)
 		openBrowser(url)
+		notifyBrowserLaunched(url)
 		return
 	}
 
@@ -104,6 +115,7 @@ func main() {
 		url := fmt.Sprintf("http://127.0.0.1:%d", childPort)
 		fmt.Printf("Web terminal starting at %s\n", url)
 		openBrowser(url)
+		notifyBrowserLaunched(url)
 		os.Exit(0)
 	}
 
@@ -137,7 +149,11 @@ func main() {
 	if len(webappFiles) == 0 {
 		fatalExit("webapp not available (zip not embedded)")
 	}
-	webPort, err := startWebAppServer(17900, 300)
+	webPort, err := startWebAppServer(17900, 300, func(u string) {
+		if d.localServer != nil {
+			d.localServer.StartBrowserWatch(u)
+		}
+	})
 	if err != nil {
 		fatalExit("failed to start web server: %v", err)
 	}
@@ -153,6 +169,9 @@ func main() {
 	writeEarlyLog(fmt.Sprintf("webapp started at %s", url))
 	if err := openBrowser(url); err != nil {
 		fmt.Printf("Please open this URL manually: %s\n", url)
+	}
+	if d.localServer != nil {
+		d.localServer.StartBrowserWatch(url)
 	}
 
 	waitForSignal(d, logger)

@@ -48,6 +48,50 @@ type LocalServer struct {
 	clientIDMu       sync.Mutex
 	clientSessions   map[string]map[string]bool // clientID -> set of sessionIDs
 	clientSessionsMu sync.Mutex
+
+	// browser-launch watch: when a caller opens the system browser, it notifies
+	// the daemon (see StartBrowserWatch); if no local client shows up within
+	// the window, the daemon assumes the browser failed to open and shows a
+	// native alert carrying the URL (for no-console users).
+	// Both fields are guarded by mu.
+	lastConnAt      time.Time // time of the most recent WS connection
+	browserWatchURL string    // URL of the pending watch ("" = none)
+}
+
+// browserWatchTimeout how long to wait for a local attach after the browser
+// was launched before warning the user. Generous on purpose: cold-starting a
+// browser (loading profile, HDD) can easily take several seconds.
+const browserWatchTimeout = 8 * time.Second
+
+// StartBrowserWatch records that a browser was just opened for url and starts
+// (or restarts) the attach watch. On timeout, if no local client is connected
+// and none connected since the watch started, shows a native alert with the
+// URL so the user can still reach the web terminal manually.
+func (ls *LocalServer) StartBrowserWatch(url string) {
+	start := time.Now()
+	ls.mu.Lock()
+	ls.browserWatchURL = url
+	ls.mu.Unlock()
+
+	go func() {
+		time.Sleep(browserWatchTimeout)
+
+		ls.mu.Lock()
+		current := ls.browserWatchURL
+		ls.browserWatchURL = ""
+		connected := len(ls.conns) > 0 || ls.lastConnAt.After(start)
+		ls.mu.Unlock()
+
+		// a newer watch superseded this one
+		if current != url {
+			return
+		}
+		if !connected {
+			ls.logger.Warnf("[BROWSER_WATCH] no local client attached within %s of browser launch", browserWatchTimeout)
+			showAlert("CLIAnywhere",
+				"The web browser may have failed to open.\nPlease visit this URL manually:\n"+url)
+		}
+	}()
 }
 
 // StartLocalServer try to bind 127.0.0.1:56300-56400, start HTTP service on success
@@ -191,6 +235,7 @@ func (ls *LocalServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	ls.mu.Lock()
 	ls.conns[conn] = true
+	ls.lastConnAt = time.Now()
 	ls.mu.Unlock()
 
 	// Windows localweb only: on the first browser connection, ask the user
@@ -439,7 +484,7 @@ func (ls *LocalServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				ls.send(conn, Message{Type: TypeSetSecCodeResult, Error: err.Error(), Success: false})
 			} else {
 				atomic.StoreInt32(&ls.daemon.secCodeEnabled, 1)
-					atomic.StoreInt32(&ls.daemon.secCodeVerified, 0)
+				atomic.StoreInt32(&ls.daemon.secCodeVerified, 0)
 				ls.send(conn, Message{Type: TypeSetSecCodeResult, Success: true})
 			}
 

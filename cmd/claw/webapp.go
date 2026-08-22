@@ -89,7 +89,9 @@ func init() {
 
 // startWebAppServer starts a local HTTP server and returns (port, error).
 // It scans ports starting from startPort and tries at most `count` of them.
-func startWebAppServer(startPort, count int) (int, error) {
+// onBrowserLaunched (may be nil) is called when a client hits /browser-launched —
+// used by short-lived launcher processes to tell the daemon a browser was opened.
+func startWebAppServer(startPort, count int, onBrowserLaunched func(url string)) (int, error) {
 	for port := startPort; port < startPort+count; port++ {
 		addr := fmt.Sprintf("127.0.0.1:%d", port)
 		listener, err := net.Listen("tcp", addr)
@@ -97,6 +99,13 @@ func startWebAppServer(startPort, count int) (int, error) {
 			continue
 		}
 		mux := http.NewServeMux()
+		if onBrowserLaunched != nil {
+			mux.HandleFunc("/browser-launched", func(w http.ResponseWriter, r *http.Request) {
+				url := "http://" + r.Host
+				onBrowserLaunched(url)
+				w.WriteHeader(http.StatusNoContent)
+			})
+		}
 		mux.HandleFunc("/", serveWebApp)
 		server := &http.Server{Handler: mux}
 		go server.Serve(listener)
