@@ -79,7 +79,7 @@ sed -i '' "s/VERSION_PLACEHOLDER/${VER}/g" "$APP/Contents/Info.plist"
 # --- Package DMG (unsigned, for local distribution/testing) ------------------
 DMG="CLIAnywhere-${VER}.dmg"
 rm -f "$DMG"
-hdiutil create -volname "CLIAnywhere" -srcfolder "$APP" -ov -format UDZO "$DMG"
+packaging/macos/make-dmg.sh "$APP" "$DMG"
 
 echo "[done]  $(pwd)/$APP"
 echo "[done]  $(pwd)/$DMG"

@@ -274,10 +274,10 @@ jobs:
           codesign --sign "$CERT_CN" --options runtime --timestamp \
             --force --deep "CLIAnywhere.app"
           codesign -dv --verbose=4 "CLIAnywhere.app"
-          # Build DMG
-          hdiutil create -volname "CLIAnywhere" \
-            -srcfolder "CLIAnywhere.app" \
-            -ov -format UDZO "CLIAnywhere.dmg"
+          # Build DMG with drag-to-Applications layout
+          "${{ github.workspace }}/packaging/macos/make-dmg.sh" \
+            "CLIAnywhere.app" \
+            "CLIAnywhere.dmg"
           # Notarize the DMG (the distributed artifact)
           xcrun notarytool submit "CLIAnywhere.dmg" \
             --key /tmp/key.p8 --key-id "$KEY_ID" \
