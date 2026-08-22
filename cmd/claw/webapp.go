@@ -11,6 +11,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -20,6 +21,30 @@ import (
 
 //go:embed localattachwebapp.zip
 var webappZip []byte
+
+// readExternalWebappZip loads the web app zip from the .app bundle's Resources
+// directory when running from a packaged CLIAnywhere.app (macOS builds keep the
+// zip there as a standalone file so a future universal binary does not carry a
+// duplicate copy per architecture). Returns nil when not applicable so the
+// embedded zip is used as a fallback.
+func readExternalWebappZip() []byte {
+	exe, err := os.Executable()
+	if err != nil {
+		return nil
+	}
+	if real, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = real
+	}
+	const marker = ".app" + string(filepath.Separator) + "Contents" + string(filepath.Separator) + "MacOS"
+	if i := strings.LastIndex(exe, marker); i >= 0 {
+		appRoot := exe[:i+len(".app")]
+		p := filepath.Join(appRoot, "Contents", "Resources", "localattachwebapp.zip")
+		if data, err := os.ReadFile(p); err == nil {
+			return data
+		}
+	}
+	return nil
+}
 
 // webappFiles loads files from the embedded zip; key is "/filepath", value is the file content.
 var webappFiles map[string][]byte
@@ -35,7 +60,13 @@ var bootstrapLoadRe = regexp.MustCompile(`_flutter\.loader\.load\(\s*\{[^}]*\}\s
 
 func init() {
 	webappFiles = make(map[string][]byte)
-	reader, err := zip.NewReader(bytes.NewReader(webappZip), int64(len(webappZip)))
+	// Packaged macOS .app loads the zip from Contents/Resources; everything
+	// else (Linux/Windows and bare binaries) uses the embedded copy.
+	zipData := webappZip
+	if external := readExternalWebappZip(); external != nil {
+		zipData = external
+	}
+	reader, err := zip.NewReader(bytes.NewReader(zipData), int64(len(zipData)))
 	if err != nil {
 		// zip missing or corrupt: webappFiles stays empty; serveWebApp returns 404.
 		return

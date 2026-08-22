@@ -1,6 +1,6 @@
 #!/bin/bash
-# Build claw (web) for macOS — output: ./CLIAnywhere.app in script dir.
-# (bundles claw binary + Info.plist + AppIcon.icns)
+# Build claw (web) for macOS — output: ./CLIAnywhere.app and ./CLIAnywhere-<date>.dmg in script dir.
+# (bundles claw binary + Info.plist + AppIcon.icns + web app zip; DMG is unsigned)
 set -e
 cd "$(dirname "$0")"
 
@@ -55,6 +55,9 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 cp claw "$APP/Contents/MacOS/claw"
 cp packaging/macos/Info.plist "$APP/Contents/Info.plist"
+# The web app zip ships as a standalone file in Resources so macOS builds read
+# it from disk (no duplicate copy inside a future universal binary).
+cp cmd/claw/localattachwebapp.zip "$APP/Contents/Resources/localattachwebapp.zip"
 
 # Generate AppIcon.icns (if iconutil is available)
 ICONSET=/tmp/AppIcon.iconset
@@ -73,4 +76,10 @@ rm -rf "$ICONSET"
 VER="$(date +%Y%m%d)"
 sed -i '' "s/VERSION_PLACEHOLDER/${VER}/g" "$APP/Contents/Info.plist"
 
+# --- Package DMG (unsigned, for local distribution/testing) ------------------
+DMG="CLIAnywhere-${VER}.dmg"
+rm -f "$DMG"
+hdiutil create -volname "CLIAnywhere" -srcfolder "$APP" -ov -format UDZO "$DMG"
+
 echo "[done]  $(pwd)/$APP"
+echo "[done]  $(pwd)/$DMG"
