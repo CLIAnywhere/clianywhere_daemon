@@ -225,7 +225,7 @@ jobs:
 
       - name: Import certificate into keychain
         env:
-          P12_PASSWORD: 123123
+          P12_PASSWORD: ${{ secrets.APPLE_P12_PASSWORD }}
         run: |
           KEYCHAIN_PATH=$RUNNER_TEMP/build.keychain
           KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
