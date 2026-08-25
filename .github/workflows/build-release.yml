@@ -13,6 +13,7 @@ name: Build Release
 #   CLIAnywhere-macos.dmg              (macOS universal Intel+Apple Silicon, signed + notarized)
 #   claw-linux-desktop-amd64.zip (Linux web)
 #   claw-linux-cli-amd64.zip     (Linux CLI)
+#   claw-linux-cli-arm64.zip     (Linux CLI, ARM64)
 
 on:
   workflow_dispatch:
@@ -128,6 +129,13 @@ jobs:
             bin: claw
             ldflags: ""
             archive: claw-linux-cli-amd64.zip
+          - target: cli-linux-arm64
+            goos: linux
+            goarch: arm64
+            tags: cli office
+            bin: claw
+            ldflags: ""
+            archive: claw-linux-cli-arm64.zip
 
     steps:
       - name: Checkout
