@@ -32,8 +32,10 @@ func ApplyUpdate(res *Result) error {
 	}
 
 	// /S = NSIS silent install; detached — we exit before it touches files.
+	logger.Infof("[UPDATE] launching installer: %s /S", path)
 	cmd := exec.Command(path, "/S")
 	if err := cmd.Start(); err != nil {
+		logger.Errorf("[UPDATE] failed to start installer %s: %v", path, err)
 		return fmt.Errorf("checkupdate: start installer: %w", err)
 	}
 

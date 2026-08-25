@@ -574,6 +574,7 @@ func (ls *LocalServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case TypeCheckUpdate:
 			// async: GitHub API round-trip must not block the read loop
 			go func() {
+				checkupdate.SetLogger(ls.logger)
 				res, err := checkupdate.CheckUpdate(Version)
 				if err != nil {
 					ls.send(conn, Message{Type: TypeCheckUpdateResult, Error: err.Error()})
@@ -591,6 +592,7 @@ func (ls *LocalServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case TypeApplyUpdate:
 			// async: download + installer launch must not block the read loop
 			go func() {
+				checkupdate.SetLogger(ls.logger)
 				res, err := checkupdate.CheckUpdate(Version)
 				if err != nil {
 					ls.send(conn, Message{Type: TypeApplyUpdateResult, Error: err.Error()})

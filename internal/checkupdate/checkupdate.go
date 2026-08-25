@@ -59,26 +59,59 @@ type Result struct {
 	Release   *Release
 }
 
+// Logger is the minimal logging interface this package needs. It is satisfied
+// structurally by the daemon's Logger (cmd/claw/logger.go), so any of its
+// implementations (StdLogger / FileLogger / ring logger) can be injected.
+type Logger interface {
+	Infof(format string, args ...any)
+	Errorf(format string, args ...any)
+}
+
+// logger is the package-level logger; defaults to a no-op so tests and
+// library use stay silent. SetLogger injects the daemon logger.
+var logger Logger = noopLogger{}
+
+type noopLogger struct{}
+
+func (noopLogger) Infof(string, ...any)  {}
+func (noopLogger) Errorf(string, ...any) {}
+
+// SetLogger injects a logger for update check/download/apply diagnostics
+// (shows up in daemon.log for the file logger). Call before CheckUpdate.
+func SetLogger(l Logger) {
+	if l != nil {
+		logger = l
+	}
+}
+
 // CheckUpdate fetches the latest release and compares it with current.
 // The version is taken from the release name (e.g. "v1.0.1"), with the
 // leading "v" stripped before a numeric component-wise comparison.
 func CheckUpdate(current string) (*Result, error) {
+	logger.Infof("[UPDATE] checking for update (current %s)", current)
+
 	rel, err := fetchLatest()
 	if err != nil {
+		logger.Errorf("[UPDATE] check failed: %v", err)
 		return nil, err
 	}
 
 	latest := ParseVersion(rel.Name)
 	if latest == "" {
-		return nil, fmt.Errorf("checkupdate: cannot parse version from release name %q", rel.Name)
+		err := fmt.Errorf("checkupdate: cannot parse version from release name %q", rel.Name)
+		logger.Errorf("[UPDATE] check failed: %v", err)
+		return nil, err
 	}
 
-	return &Result{
+	res := &Result{
 		Current:   current,
 		Latest:    latest,
 		Available: CompareVersions(latest, current) > 0,
 		Release:   rel,
-	}, nil
+	}
+	logger.Infof("[UPDATE] latest release %s (release %q, %d assets), update available: %v",
+		rel.TagName, rel.Name, len(rel.Assets), res.Available)
+	return res, nil
 }
 
 // fetchLatest calls the GitHub API for the latest release.
@@ -123,7 +156,7 @@ func PlatformAsset(rel *Release) *Asset {
 	return nil
 }
 
-// Download fetches the asset (with token, via the API endpoint) and saves it
+// Download fetches the asset (via the API endpoint) and saves it
 // into the directory of the running process. Returns the saved file path.
 func Download(asset *Asset) (string, error) {
 	exe, err := os.Executable()
@@ -134,6 +167,7 @@ func Download(asset *Asset) (string, error) {
 		exe = resolved
 	}
 	dest := filepath.Join(filepath.Dir(exe), asset.Name)
+	logger.Infof("[UPDATE] downloading %s (%d bytes) -> %s", asset.Name, asset.Size, dest)
 
 	req, err := http.NewRequest(http.MethodGet, asset.URL, nil)
 	if err != nil {
@@ -145,11 +179,13 @@ func Download(asset *Asset) (string, error) {
 	client := &http.Client{Timeout: downloadTimeout}
 	resp, err := client.Do(req)
 	if err != nil {
+		logger.Errorf("[UPDATE] download %s failed: %v", asset.Name, err)
 		return "", fmt.Errorf("checkupdate: download %s: %w", asset.Name, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		logger.Errorf("[UPDATE] download %s failed: status %d", asset.Name, resp.StatusCode)
 		return "", fmt.Errorf("checkupdate: download %s: status %d", asset.Name, resp.StatusCode)
 	}
 
@@ -163,6 +199,7 @@ func Download(asset *Asset) (string, error) {
 	if _, err := io.Copy(f, resp.Body); err != nil {
 		f.Close()
 		os.Remove(tmp)
+		logger.Errorf("[UPDATE] save %s failed: %v", asset.Name, err)
 		return "", fmt.Errorf("checkupdate: save %s: %w", asset.Name, err)
 	}
 	if err := f.Close(); err != nil {
@@ -171,8 +208,10 @@ func Download(asset *Asset) (string, error) {
 	}
 	if err := os.Rename(tmp, dest); err != nil {
 		os.Remove(tmp)
+		logger.Errorf("[UPDATE] rename to %s failed: %v", dest, err)
 		return "", fmt.Errorf("checkupdate: rename %s: %w", asset.Name, err)
 	}
+	logger.Infof("[UPDATE] download complete: %s", dest)
 	return dest, nil
 }
 
