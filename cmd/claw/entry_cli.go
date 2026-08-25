@@ -266,6 +266,7 @@ func runMainMenu(title string) {
 			"Attach to session",
 			"Set AccessKey",
 			secCodeLabel,
+			"Check for Updates",
 			"Stop Server",
 			"Exit (server keeps running, connect via app)",
 		}
@@ -275,6 +276,7 @@ func runMainMenu(title string) {
 				"Set AccessKey",
 				secCodeLabel,
 				"Unset Security Code",
+				"Check for Updates",
 				"Stop Server",
 				"Exit (server keeps running, connect via app)",
 			}
@@ -318,10 +320,12 @@ func runMainMenu(title string) {
 			handleSetSecCodeFromMenu()
 		case choice == 3 && secCodeSet: // Unset Security Code
 			handleUnsetSecCodeFromMenu()
-		case (choice == 3 && !secCodeSet) || (choice == 4 && secCodeSet): // Stop Server
+		case (choice == 3 && !secCodeSet) || (choice == 4 && secCodeSet): // Check for Updates
+			handleCheckUpdateInteractive()
+		case (choice == 4 && !secCodeSet) || (choice == 5 && secCodeSet): // Stop Server
 			handleStop()
 			return
-		case (choice == 4 && !secCodeSet) || (choice == 5 && secCodeSet) || choice == -1: // Exit or Ctrl+C
+		case (choice == 5 && !secCodeSet) || (choice == 6 && secCodeSet) || choice == -1: // Exit or Ctrl+C
 			return
 		}
 	}
