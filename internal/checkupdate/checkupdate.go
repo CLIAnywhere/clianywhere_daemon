@@ -18,7 +18,7 @@ import (
 const (
 	// apiURL is the GitHub "latest release" endpoint of the daemon release
 	// repo. The repo is public, so no authentication is needed.
-	apiURL = "https://api.github.com/repos/hujun236/daemontest/releases/latest"
+	apiURL = "https://api.github.com/repos/CLIAnywhere/clianywhere_daemon/releases/latest"
 
 	// httpTimeout bounds the whole API request.
 	httpTimeout = 15 * time.Second
@@ -29,7 +29,7 @@ const (
 
 // Public download URL pattern for reference:
 //
-//	https://github.com/hujun236/daemontest/releases/download/v<version>/<asset>
+//	https://github.com/CLIAnywhere/clianywhere_daemon/releases/download/v<version>/<asset>
 //
 // Downloads go through the GitHub API asset endpoint (Asset.URL, filled by
 // the releases API) with Accept: application/octet-stream, which works for
