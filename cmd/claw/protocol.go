@@ -28,8 +28,8 @@ const (
 	// (before encryption). Base64 (×4/3) + AES-GCM tag (16B) + envelope JSON
 	// (~50B) must fit inside 32KB:
 	//   floor((32768-50)/4*3) - 16 ≈ 24537 → keep margin → 24000.
-	// Producers that can exceed this (e.g. dir_list of huge directories) were
-	// already at risk of hitting the plaintext 32KB frame limit; the assert in
+	// Producers that can exceed this (e.g. dir_list of huge directories) must
+	// chunk their output (see sendDirList / sendHistoryChunks); the assert in
 	// SecureChannel.WrapJSON surfaces any regression loudly instead of silently
 	// disconnecting.
 	SecureMaxTextPayload = 24000

@@ -463,14 +463,7 @@ func (ftm *FileTransferManager) HandleDirListRequest(reqPath string) {
 	sort.Slice(dirs, func(i, j int) bool { return dirs[i].Name < dirs[j].Name })
 	sort.Slice(files, func(i, j int) bool { return files[i].Name < files[j].Name })
 
-	ftm.daemon.sendJSON(&Message{
-		Type: TypeDirList,
-		Path: toForwardSlash(targetPath),
-		Entries: &DirEntries{
-			Dirs:  dirs,
-			Files: files,
-		},
-	})
+	ftm.sendDirList(toForwardSlash(targetPath), dirs, files)
 }
 
 // HandleReqPending handle remote file add-to-pending request
@@ -527,12 +520,64 @@ func (ftm *FileTransferManager) sendDriveList() {
 	}
 
 	sort.Slice(dirs, func(i, j int) bool { return dirs[i].Name < dirs[j].Name })
-	ftm.daemon.sendJSON(&Message{
-		Type: TypeDirList,
-		Path: "",
-		Entries: &DirEntries{
-			Dirs:  dirs,
-			Files: []DirEntry{},
-		},
-	})
+	ftm.sendDirList("", dirs, []DirEntry{})
+}
+
+// dirListEnvelopeOverhead is the safety margin (bytes) reserved for the
+// dir_list message envelope ("type","path","seq","total_chunks", etc.) on
+// top of the summed entry sizes when packing chunks.
+const dirListEnvelopeOverhead = 1000
+
+// sendDirList sends a directory listing as one or more dir_list messages.
+// A huge directory can exceed SecureMaxTextPayload (24KB inner JSON limit
+// enforced by the E2E secure channel) in a single message, so entries are
+// packed into chunks sized by their actual marshaled length — the same
+// chunking strategy as terminal history, but reusing the Message
+// TotalChunks/ChunkIndex fields on dir_list itself. Entries are sent in
+// order (all dirs first, then all files) so the app can simply concatenate
+// chunks in arrival order.
+func (ftm *FileTransferManager) sendDirList(path string, dirs, files []DirEntry) {
+	// exact marshaled size of each entry, in final send order (dirs then files)
+	sizes := make([]int, 0, len(dirs)+len(files))
+	for i := range dirs {
+		b, _ := json.Marshal(dirs[i])
+		sizes = append(sizes, len(b)+1) // +1 for the JSON comma separator
+	}
+	for i := range files {
+		b, _ := json.Marshal(files[i])
+		sizes = append(sizes, len(b)+1)
+	}
+
+	budget := int(SecureMaxTextPayload) - dirListEnvelopeOverhead
+
+	// pack entry index ranges [start,end) into chunks within budget
+	type span struct{ start, end int }
+	var chunks []span
+	start, cost := 0, 0
+	for i, s := range sizes {
+		if cost > 0 && cost+s > budget {
+			chunks = append(chunks, span{start, i})
+			start, cost = i, 0
+		}
+		cost += s
+	}
+	chunks = append(chunks, span{start, len(sizes)})
+
+	ndirs := len(dirs)
+	for i, c := range chunks {
+		// map the combined [start,end) range back to dirs/files sub-slices
+		dLo, dHi := c.start, min(c.end, ndirs)
+		fLo, fHi := max(c.start-ndirs, 0), max(c.end-ndirs, 0)
+		msg := &Message{
+			Type:        TypeDirList,
+			Path:        path,
+			TotalChunks: len(chunks),
+			ChunkIndex:  i,
+			Entries: &DirEntries{
+				Dirs:  dirs[dLo:dHi],
+				Files: files[fLo:fHi],
+			},
+		}
+		ftm.daemon.sendJSONWithBackpressure(msg, 64*1024)
+	}
 }
