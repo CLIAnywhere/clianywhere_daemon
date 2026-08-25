@@ -7,7 +7,8 @@
 ; Per-user install (no UAC):
 ;   - Installs to %USERPROFILE%\.clianywhere (same dir daemon uses for config)
 ;   - Uninstall info under HKCU, Start Menu shortcut for current user only
-;   - Uninstall keeps user config (config.yaml / logs); only binaries are removed
+;   - Uninstall keeps user data (daemon.accesskey, security_code, logs);
+;     only binaries are removed
 
 Unicode true
 
@@ -30,6 +31,7 @@ ShowUninstDetails show
 
 !include "MUI2.nsh"
 !include "FileFunc.nsh"
+!include "LogicLib.nsh"
 
 !define MUI_ICON "icon.ico"
 !define MUI_UNICON "icon.ico"
@@ -51,11 +53,20 @@ ShowUninstDetails show
 Section "Install"
   ; Stop a running instance so files can be overwritten:
   ; first try graceful close (WM_CLOSE), then force-kill leftovers.
+  ; taskkill exit code 0 = process was found (and signaled/killed),
+  ; 128 = not running. Record whether an instance existed before install.
+  StrCpy $R0 0
   nsExec::ExecToLog 'taskkill /T /IM ${APP_EXE}'
   Pop $0
+  ${If} $0 == 0
+    StrCpy $R0 1
+  ${EndIf}
   Sleep 1500
   nsExec::ExecToLog 'taskkill /F /T /IM ${APP_EXE}'
   Pop $0
+  ${If} $0 == 0
+    StrCpy $R0 1
+  ${EndIf}
 
   SetOutPath "$INSTDIR"
   File "${APP_EXE}"
@@ -81,6 +92,13 @@ Section "Install"
   ${GetSize} "$INSTDIR" "/S=0K" $0 $1 $2
   IntFmt $0 "0x%08X" $0
   WriteRegDWORD HKCU "${UNINST_KEY}" "EstimatedSize" "$0"
+
+  ; Silent install (/S): no finish page is shown, so if an instance was
+  ; running before the upgrade, restart it now to restore prior state.
+  ${If} $R0 == 1
+  ${AndIf} ${Silent}
+    Exec '"$INSTDIR\${APP_EXE}"'
+  ${EndIf}
 SectionEnd
 
 Section "Uninstall"
@@ -95,7 +113,7 @@ Section "Uninstall"
   Delete "$DESKTOP\${PRODUCT}.lnk"
   RMDir "$SMPROGRAMS\${PRODUCT}"
 
-  ; Binaries only — keep user config (config.yaml etc.) in $INSTDIR
+  ; Binaries only — keep user data (daemon.accesskey, security_code, logs) in $INSTDIR
   Delete "$INSTDIR\${APP_EXE}"
   Delete "$INSTDIR\uninstall.exe"
   RMDir "$INSTDIR" ; only removed if empty (config still there)
