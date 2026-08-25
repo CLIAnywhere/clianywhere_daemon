@@ -75,8 +75,9 @@ func ApplyUpdate(res *Result) error {
 	}
 
 	// open mounts the dmg and shows its Finder window (drag-to-Applications
-	// layout). No process restart — the new version runs after the user
-	// replaces the bundle and launches it.
+	// layout). The daemon exits shortly after (see exitAfterUpdate in
+	// cmd/claw) and the user restarts the server by launching the new app
+	// after dragging it into place.
 	logger.Infof("[UPDATE] opened %s — user drags the app to Applications", openPath)
 	if out, err := exec.Command("open", openPath).CombinedOutput(); err != nil {
 		return fmt.Errorf("checkupdate: open dmg: %s: %w", strings.TrimSpace(string(out)), err)

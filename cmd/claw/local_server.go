@@ -626,7 +626,8 @@ func (ls *LocalServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					// success (macOS: dmg opened for manual install). On
 					// Windows it never returns — the process exits for the
 					// installer — so this is not sent there.
-					ls.send(conn, Message{Type: TypeApplyUpdateResult, Success: true, Data: "update package opened; drag CLIAnywhere.app to Applications"})
+					ls.send(conn, Message{Type: TypeApplyUpdateResult, Success: true, Data: "update package opened; drag CLIAnywhere.app to Applications and restart the server"})
+					exitAfterUpdate()
 				}
 			}()
 
