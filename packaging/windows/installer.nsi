@@ -104,7 +104,7 @@ Section "Install"
   ; Pass --autostart so the daemon runs quietly without opening a browser
   ; (the user was using it before; a manual launch opens the browser).
   ClearErrors
-  ${GetOptions} `$CMDLINE` `/restart' $R1
+  ${GetOptions} "$CMDLINE" "/restart" $R1
   ${If} ${Silent}
     ${If} $R0 == 1
     ${OrIfNot} ${Errors}
