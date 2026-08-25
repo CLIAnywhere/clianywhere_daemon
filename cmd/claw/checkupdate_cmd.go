@@ -7,6 +7,10 @@ import (
 	"github.com/CLIAnywhere/clianywhere_daemon/internal/checkupdate"
 )
 
+// selfBuildNotice is shown when a self-built (non-office) binary tries to
+// apply an update — see buildtag_office.go / buildtag_default.go.
+const selfBuildNotice = "This binary was built by you, not from an official release. To update, fetch the latest source and rebuild it yourself (git pull && go build)."
+
 // handleCheckUpdate implements the "checkupdate" subcommand: query the latest
 // GitHub release and report whether an update is available.
 func handleCheckUpdate() {
@@ -41,6 +45,10 @@ func handleUpdate() {
 		fmt.Printf("Already up to date (%s).\n", res.Current)
 		return
 	}
+	if !isOfficeBuild {
+		fmt.Println(selfBuildNotice)
+		return
+	}
 
 	fmt.Printf("Updating %s -> %s...\n", res.Current, res.Latest)
 	if err := checkupdate.ApplyUpdate(res); err != nil {
@@ -63,6 +71,11 @@ func handleCheckUpdateInteractive() {
 	fmt.Printf("Latest  version: %s\n", res.Latest)
 	if !res.Available {
 		fmt.Println("Already up to date.")
+		return
+	}
+	if !isOfficeBuild {
+		// self-built binary: show the update but refuse to apply it
+		fmt.Println(selfBuildNotice)
 		return
 	}
 	if asset := checkupdate.PlatformAsset(res.Release); asset != nil {

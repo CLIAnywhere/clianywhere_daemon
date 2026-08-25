@@ -595,6 +595,12 @@ func (ls *LocalServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}()
 
 		case TypeApplyUpdate:
+			// Self-built binaries only check — applying a prebuilt release
+			// package is refused; the user rebuilds from source instead.
+			if !isOfficeBuild {
+				ls.send(conn, Message{Type: TypeApplyUpdateResult, Error: selfBuildNotice})
+				continue
+			}
 			// async: download + installer launch must not block the read loop
 			go func() {
 				// re-entry guard: a second apply_update (e.g. user closed and

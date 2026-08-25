@@ -96,35 +96,35 @@ jobs:
           - target: web-windows-amd64
             goos: windows
             goarch: amd64
-            tags: web
+            tags: web office
             bin: claw.exe
             ldflags: "-H windowsgui"
             archive: claw-windows.zip # unused for windows (NSIS installer is built instead)
           - target: web-darwin-amd64
             goos: darwin
             goarch: amd64
-            tags: web
+            tags: web office
             bin: claw
             ldflags: ""
             archive: claw-macos-amd64.zip
           - target: web-darwin-arm64
             goos: darwin
             goarch: arm64
-            tags: web
+            tags: web office
             bin: claw
             ldflags: ""
             archive: claw-macos-arm64.zip
           - target: web-linux-amd64
             goos: linux
             goarch: amd64
-            tags: web
+            tags: web office
             bin: claw
             ldflags: ""
             archive: claw-linux-desktop-amd64.zip
           - target: cli-linux-amd64
             goos: linux
             goarch: amd64
-            tags: cli
+            tags: cli office
             bin: claw
             ldflags: ""
             archive: claw-linux-cli-amd64.zip
