@@ -621,9 +621,13 @@ func (ls *LocalServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				if err := checkupdate.ApplyUpdate(res); err != nil {
 					ls.logger.Errorf("[UPDATE] apply failed: %v", err)
 					ls.send(conn, Message{Type: TypeApplyUpdateResult, Error: err.Error()})
+				} else {
+					// Reached on platforms where ApplyUpdate returns on
+					// success (macOS: dmg opened for manual install). On
+					// Windows it never returns — the process exits for the
+					// installer — so this is not sent there.
+					ls.send(conn, Message{Type: TypeApplyUpdateResult, Success: true, Data: "update package opened; drag CLIAnywhere.app to Applications"})
 				}
-				// On success ApplyUpdate never returns (process exits for the
-				// installer to replace files), so no final message is sent.
 			}()
 
 		default:
