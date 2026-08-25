@@ -80,7 +80,7 @@ jobs:
             if [ "$prerelease" = "true" ]; then
               args+=(--prerelease)
             else
-              args+=(--latest=false)
+              args+=(--latest)
             fi
             gh release "${args[@]}"
           fi
