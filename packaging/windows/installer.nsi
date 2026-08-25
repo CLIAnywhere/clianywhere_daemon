@@ -95,9 +95,11 @@ Section "Install"
 
   ; Silent install (/S): no finish page is shown, so if an instance was
   ; running before the upgrade, restart it now to restore prior state.
+  ; Pass --autostart so the daemon runs quietly without opening a browser
+  ; (the user was using it before; a manual launch opens the browser).
   ${If} $R0 == 1
   ${AndIf} ${Silent}
-    Exec '"$INSTDIR\${APP_EXE}"'
+    Exec '"$INSTDIR\${APP_EXE}" --autostart'
   ${EndIf}
 SectionEnd
 
