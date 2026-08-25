@@ -28,6 +28,8 @@
 	<string>public.app-category.developer-tools</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>CLIAnywhere asks Finder to copy the updated application into place, because macOS App Management protection does not allow the app to replace its own bundle directly.</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>Copyright © 2026 JUN HU. All rights reserved.</string>
 	<key>NSPrincipalClass</key>

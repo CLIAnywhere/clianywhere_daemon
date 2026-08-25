@@ -142,15 +142,28 @@ func ApplyUpdate(res *Result) error {
 		return fmt.Errorf("checkupdate: no .app found in %s", mountPoint)
 	}
 
-	// Replace the whole bundle: rm + ditto (ditto onto an existing dir would
-	// MERGE, leaving stale files and breaking the code signature). Deleting
-	// the running app is safe on macOS — no file locks.
-	logger.Infof("[UPDATE] replacing %s with %s", bundle, src)
+	// Replace the whole bundle. Deleting the running app is safe on macOS —
+	// no file locks.
+	//
+	// IMPORTANT: the copy itself must be done BY FINDER, not by us (ditto/cp
+	// as our child). Since macOS Ventura (tightened in Sequoia) the "App
+	// Management" TCC protection SIGKILLs any process — including an app
+	// updating itself — that writes into an app bundle under /Applications.
+	// Finder is allowed to do it, so we send it an Apple event instead. The
+	// first run shows a one-time "CLIAnywhere wants to control Finder"
+	// prompt (NSAppleEventsUsageDescription covers it in Info.plist).
+	logger.Infof("[UPDATE] replacing %s with %s (via Finder)", bundle, src)
 	if err := os.RemoveAll(bundle); err != nil {
 		return fmt.Errorf("checkupdate: remove old bundle: %w", err)
 	}
-	if out, err := exec.Command("ditto", src, bundle).CombinedOutput(); err != nil {
-		return fmt.Errorf("checkupdate: copy bundle: %s: %w", strings.TrimSpace(string(out)), err)
+	destDir := filepath.Dir(bundle)
+	script := fmt.Sprintf(`tell application "Finder" to duplicate POSIX file %q to POSIX file %q`, src, destDir)
+	if out, err := exec.Command("osascript", "-e", script).CombinedOutput(); err != nil {
+		if strings.Contains(strings.ToLower(string(out)), "not authorized") ||
+			strings.Contains(string(out), "-1743") {
+			return fmt.Errorf("checkupdate: Finder automation denied: allow CLIAnywhere to control Finder in System Settings > Privacy & Security > Automation, or update manually: %s", string(out))
+		}
+		return fmt.Errorf("checkupdate: Finder copy: %s: %w", strings.TrimSpace(string(out)), err)
 	}
 
 	// Belt and braces: strip any quarantine flag so Gatekeeper never
