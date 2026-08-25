@@ -581,8 +581,11 @@ func (ftm *FileTransferManager) sendDirList(path string, dirs, files []DirEntry)
 	ftm.logger.Infof("[dirlist] chunking path=%q totalEntries=%d chunks=%d budget=%d",
 		path, len(sizes), len(chunks), budget)
 	for i, c := range chunks {
-		// map the combined [start,end) range back to dirs/files sub-slices
-		dLo, dHi := c.start, min(c.end, ndirs)
+		// map the combined [start,end) range back to dirs/files sub-slices.
+		// dLo must clamp to ndirs too: a chunk starting past the dirs/files
+		// boundary (e.g. dirs=1, chunk starts at 306) would otherwise index
+		// dirs[306:1] and panic.
+		dLo, dHi := min(c.start, ndirs), min(c.end, ndirs)
 		fLo, fHi := max(c.start-ndirs, 0), max(c.end-ndirs, 0)
 		msg := &Message{
 			Type:        TypeDirList,
