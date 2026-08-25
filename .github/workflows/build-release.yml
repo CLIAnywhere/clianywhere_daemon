@@ -46,11 +46,16 @@ jobs:
       - name: Compute tag
         id: tag
         run: |
+          # Single source of truth: cmd/claw/version.go
+          VER="$(sed -n 's/^var Version = "\(.*\)"$/\1/p' cmd/claw/version.go)"
+          if [ -z "$VER" ]; then
+            echo "Failed to parse Version from cmd/claw/version.go" >&2
+            exit 1
+          fi
           if [ -n "${{ github.event.inputs.tag }}" ]; then
             echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
           else
-            short="$(echo ${{ github.sha }} | cut -c1-7)"
-            echo "tag=v$(date +'%Y%m%d')-${short}" >> "$GITHUB_OUTPUT"
+            echo "tag=v${VER}" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Create Release
@@ -151,15 +156,15 @@ jobs:
 
       - name: Package
         id: package
-        env:
-          TAG: ${{ needs.prepare.outputs.tag }}
         run: |
           set -e
           if [ "${{ matrix.goos }}" = "windows" ]; then
             # Build NSIS installer (per-user, installs to %USERPROFILE%\.clianywhere)
             sudo apt-get update -qq
             sudo apt-get install -y -qq nsis
-            makensis -NOCD -DVERSION="${TAG#v}" packaging/windows/installer.nsi
+            # Installer version comes from cmd/claw/version.go (same as `claw version`)
+            VER="$(sed -n 's/^var Version = "\(.*\)"$/\1/p' cmd/claw/version.go)"
+            makensis -NOCD -DVERSION="$VER" packaging/windows/installer.nsi
             asset="clianywhere-setup.exe"
           else
             # Pack only the binary; do not include sources or other files.
