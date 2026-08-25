@@ -9,7 +9,7 @@ name: Build Release
 #   3. actions/upload-artifact and download-artifact are intentionally not used
 #
 # Artifacts:
-#   claw-windows.zip             (Windows GUI, -H windowsgui)
+#   CLIAnywhere-windows-setup-vX.Y.Z.exe (Windows GUI installer, NSIS, per-user install)
 #   CLIAnywhere-macos.dmg              (macOS universal Intel+Apple Silicon, signed + notarized)
 #   claw-linux-desktop-amd64.zip (Linux web)
 #   claw-linux-cli-amd64.zip     (Linux CLI)
@@ -94,7 +94,7 @@ jobs:
             tags: web
             bin: claw.exe
             ldflags: "-H windowsgui"
-            archive: claw-windows.zip
+            archive: claw-windows.zip # unused for windows (NSIS installer is built instead)
           - target: web-darwin-amd64
             goos: darwin
             goarch: amd64
@@ -150,11 +150,24 @@ jobs:
           file '${{ matrix.bin }}' || true
 
       - name: Package
+        id: package
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
         run: |
           set -e
-          # Pack only the binary; do not include sources or other files.
-          zip '${{ matrix.archive }}' '${{ matrix.bin }}'
-          ls -lh '${{ matrix.archive }}'
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            # Build NSIS installer (per-user, installs to %USERPROFILE%\.clianywhere)
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq nsis
+            makensis -NOCD -DVERSION="${TAG#v}" packaging/windows/installer.nsi
+            asset="CLIAnywhere-windows-setup-v${TAG#v}.exe"
+          else
+            # Pack only the binary; do not include sources or other files.
+            zip '${{ matrix.archive }}' '${{ matrix.bin }}'
+            asset="${{ matrix.archive }}"
+          fi
+          ls -lh "$asset"
+          echo "asset=$asset" >> "$GITHUB_OUTPUT"
 
       - name: Upload asset to Release
         env:
@@ -162,7 +175,7 @@ jobs:
         run: |
           set -e
           gh release upload "${{ needs.prepare.outputs.tag }}" \
-            '${{ matrix.archive }}' \
+            "${{ steps.package.outputs.asset }}" \
             -R "${{ github.repository }}" --clobber
 
   sign-macos:
