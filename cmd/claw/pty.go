@@ -6,9 +6,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"sync"
 	"time"
 )
+
+// maxSessionNameLen caps a client-supplied session name (display-only) so a
+// hostile/buggy client cannot blow up tab bars and session lists.
+const maxSessionNameLen = 32
 
 // ptyConn abstract platform-specific PTY operations (separate Unix/Windows implementations)
 type ptyConn interface {
@@ -111,7 +116,7 @@ func (pm *PTYManager) CreatePool(count int, shell string) []*Session {
 	var results []*Session
 	for i := 0; i < count; i++ {
 		id := pm.generateID()
-		s, err := pm.Create(id, shell, pm.cfg.DefaultCols, pm.cfg.DefaultRows, true)
+		s, err := pm.Create(id, shell, pm.cfg.DefaultCols, pm.cfg.DefaultRows, true, "")
 		if err != nil {
 			continue
 		}
@@ -120,8 +125,10 @@ func (pm *PTYManager) CreatePool(count int, shell string) []*Session {
 	return results
 }
 
-// Create create new PTY session
-func (pm *PTYManager) Create(id, shell string, cols, rows int, loginShell bool) (*Session, error) {
+// Create create new PTY session. name is an optional display name requested by
+// the client; when empty (or whitespace-only — legacy clients don't send the
+// field at all) it falls back to the auto-increment "shellN" default.
+func (pm *PTYManager) Create(id, shell string, cols, rows int, loginShell bool, name string) (*Session, error) {
 	if cols <= 0 {
 		cols = pm.cfg.DefaultCols
 	}
@@ -155,8 +162,14 @@ func (pm *PTYManager) Create(id, shell string, cols, rows int, loginShell bool) 
 	}
 
 	pm.mu.Lock()
-	pm.nameCounter++
-	s.Name = fmt.Sprintf("shell%d", pm.nameCounter)
+	name = strings.TrimSpace(name)
+	if name == "" {
+		pm.nameCounter++
+		name = fmt.Sprintf("shell%d", pm.nameCounter)
+	} else if r := []rune(name); len(r) > maxSessionNameLen {
+		name = string(r[:maxSessionNameLen])
+	}
+	s.Name = name
 	pm.sessions[id] = s
 	pm.order = append(pm.order, id)
 	pm.mu.Unlock()

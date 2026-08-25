@@ -357,7 +357,7 @@ func (ls *LocalServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 
 		case TypeCreateSession:
-			s, err := ls.daemon.CreateSession(msg.Shell)
+			s, err := ls.daemon.CreateSession(msg.Shell, msg.Name)
 			if err != nil {
 				ls.send(conn, Message{Type: TypeError, Error: err.Error()})
 			} else {

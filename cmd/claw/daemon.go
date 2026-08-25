@@ -969,7 +969,7 @@ func (d *Daemon) handleCreateSession(msg *Message) {
 	if msg.LoginShell != nil {
 		loginShell = *msg.LoginShell
 	}
-	s, err := d.ptyMgr.Create(msg.SessionID, msg.Shell, d.cfg.DefaultCols, d.cfg.DefaultRows, loginShell)
+	s, err := d.ptyMgr.Create(msg.SessionID, msg.Shell, d.cfg.DefaultCols, d.cfg.DefaultRows, loginShell, msg.Name)
 	if err != nil {
 		// Clean up subscription on failure
 		d.subMu.Lock()
@@ -1219,7 +1219,7 @@ func (d *Daemon) replenishPool() {
 	}
 	for i := 0; i < deficit; i++ {
 		id := d.ptyMgr.generateID()
-		_, err := d.ptyMgr.Create(id, d.cfg.DefaultShell, d.cfg.DefaultCols, d.cfg.DefaultRows, true)
+		_, err := d.ptyMgr.Create(id, d.cfg.DefaultShell, d.cfg.DefaultCols, d.cfg.DefaultRows, true, "")
 		if err != nil {
 			continue
 		}
@@ -1247,12 +1247,12 @@ func (d *Daemon) DetachLocalSession(sessionID string, clientID string) {
 }
 
 // CreateSession create new session (for local WS call)
-func (d *Daemon) CreateSession(shell string) (*Session, error) {
+func (d *Daemon) CreateSession(shell, name string) (*Session, error) {
 	if shell == "" {
 		shell = d.cfg.DefaultShell
 	}
 	id := d.ptyMgr.generateID()
-	return d.ptyMgr.Create(id, shell, d.cfg.DefaultCols, d.cfg.DefaultRows, true)
+	return d.ptyMgr.Create(id, shell, d.cfg.DefaultCols, d.cfg.DefaultRows, true, name)
 }
 
 // DestroySession destroy session
