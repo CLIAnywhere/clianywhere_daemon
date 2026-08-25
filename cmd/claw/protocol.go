@@ -157,10 +157,21 @@ const (
 	TypeUnsubscribeLogs   = "unsubscribe_logs"     // Client→LocalServer: unsubscribe from log stream
 	TypeLogData           = "log_data"             // LocalServer→Client: log entry push
 
-	// Desktop Shortcut (Windows localweb only — first browser connection)
-	TypeAskShortcut      = "ask_shortcut"      // Daemon→App: ask user whether to create desktop shortcut
-	TypeShortcutResponse = "shortcut_response" // App→Daemon: user's choice (Success=true means yes)
-	TypeShortcutResult   = "shortcut_result"   // Daemon→App: result of createDesktopShortcut (Success + Error)
+	// Desktop Shortcut & Auto Run (local web settings + first-connection ask)
+	TypeAskShortcut       = "ask_shortcut"        // Daemon→App: recommend shortcut + auto run, confirm opens Settings
+	TypeShortcutResponse  = "shortcut_response"   // App→Daemon: dialog dismissed; daemon marks asked (no create)
+	TypeGetStartupStatus  = "get_startup_status"  // LocalWeb→Daemon: query shortcut + autorun state
+	TypeStartupStatus     = "startup_status"      // Daemon→LocalWeb: {shortcut, autorun, autorun_supported}
+	TypeSetShortcut       = "set_shortcut"        // LocalWeb→Daemon: {enable} create/remove desktop shortcut
+	TypeSetShortcutResult = "set_shortcut_result" // Daemon→LocalWeb: result + refreshed shortcut state
+	TypeSetAutoRun        = "set_autorun"         // LocalWeb→Daemon: {enable} register/remove OS autostart
+	TypeSetAutoRunResult  = "set_autorun_result"  // Daemon→LocalWeb: result + refreshed autorun state
+
+	// Self update (checkupdate, local web UI)
+	TypeCheckUpdate       = "check_update"        // LocalWeb→Daemon: query latest release version
+	TypeCheckUpdateResult = "check_update_result" // Daemon→LocalWeb: {current_version, latest_version, update_available}
+	TypeApplyUpdate       = "apply_update"        // LocalWeb→Daemon: download + apply update (daemon may exit)
+	TypeApplyUpdateResult = "apply_update_result" // Daemon→LocalWeb: progress / final result
 
 	// E2E secure channel (SPAKE2 handshake + encrypted data plane).
 	// Handshake messages are PLAINTEXT (the relay sees only these + the outer
@@ -235,6 +246,17 @@ type Message struct {
 	BindCode   string     `json:"bindcode,omitempty"`
 	Success    bool       `json:"success,omitempty"`
 	LogEntries []LogEntry `json:"log_entries,omitempty"`
+
+	// startup settings (desktop shortcut + auto run)
+	Enable           bool `json:"enable,omitempty"`
+	Shortcut         bool `json:"shortcut,omitempty"`
+	AutoRun          bool `json:"autorun,omitempty"`
+	AutoRunSupported bool `json:"autorun_supported,omitempty"`
+
+	// self update (checkupdate)
+	CurrentVersion  string `json:"current_version,omitempty"`
+	LatestVersion   string `json:"latest_version,omitempty"`
+	UpdateAvailable bool   `json:"update_available,omitempty"`
 
 	// HTTP proxy fetch (Web SW proxy)
 	StatusCode  int    `json:"status_code,omitempty"`

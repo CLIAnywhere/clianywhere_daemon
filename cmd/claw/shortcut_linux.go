@@ -65,12 +65,9 @@ func userDesktopPath() (string, error) {
 // desktop environments will run it on double-click (GNOME 43+ additionally
 // requires a one-time "Allow launching" via right-click, which we cannot bypass).
 func createDesktopShortcut() error {
-	exePath, err := os.Executable()
+	exePath, err := resolvedExePath()
 	if err != nil {
 		return fmt.Errorf("resolve exe: %w", err)
-	}
-	if real, err := filepath.EvalSymlinks(exePath); err == nil {
-		exePath = real
 	}
 	workDir := filepath.Dir(exePath)
 
@@ -105,5 +102,53 @@ Categories=Development;System;
 	// Mark the file as trusted for GNOME — disables the "Untrusted application
 	// launcher" prompt. Best-effort: only works on Nautilus-based DEs.
 	_ = markDesktopTrusted(desktopPath)
+	return nil
+}
+
+// hasDesktopShortcut reports whether ~/Desktop (XDG desktop) contains our
+// CLIAnywhere.desktop entry AND its Exec= line points at the current binary.
+// A mismatched Exec (binary moved/upgraded elsewhere) counts as OFF.
+func hasDesktopShortcut() bool {
+	exePath, err := resolvedExePath()
+	if err != nil {
+		return false
+	}
+	desktop, err := userDesktopPath()
+	if err != nil {
+		return false
+	}
+	data, err := os.ReadFile(filepath.Join(desktop, "CLIAnywhere.desktop"))
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "Exec=") {
+			continue
+		}
+		exec := strings.TrimSpace(strings.TrimPrefix(line, "Exec="))
+		// Our generated entry is a bare absolute path; tolerate quotes and
+		// freedesktop placeholders appended by other tools.
+		exec = strings.Trim(exec, `"`)
+		if i := strings.IndexByte(exec, ' '); i >= 0 {
+			exec = exec[:i]
+		}
+		if samePath(exec, exePath) {
+			return true
+		}
+	}
+	return false
+}
+
+// removeDesktopShortcut deletes the desktop .desktop entry.
+func removeDesktopShortcut() error {
+	desktop, err := userDesktopPath()
+	if err != nil {
+		return fmt.Errorf("resolve desktop: %w", err)
+	}
+	desktopPath := filepath.Join(desktop, "CLIAnywhere.desktop")
+	if err := os.Remove(desktopPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove .desktop: %w", err)
+	}
 	return nil
 }

@@ -65,11 +65,12 @@ var (
 	shortcutReqCh      = make(chan *shortcutJob, 8)
 )
 
+// shortcutJob carries an arbitrary COM operation as a closure, so create and
+// query jobs share the same STA worker.
 type shortcutJob struct {
-	exePath string
-	workDir string
-	lnkPath string
-	reply   chan error
+	fn    func() error
+	label string
+	reply chan error
 }
 
 // ensureShortcutWorker starts the background COM worker exactly once.
@@ -97,16 +98,24 @@ func shortcutWorkerLoop() {
 	// prevents the shell32 cached-state corruption that crashed us before.
 
 	for job := range shortcutReqCh {
-		scLog("worker: start job lnk=%s exe=%s", job.lnkPath, job.exePath)
-		err := doCreateShortcut(job)
+		scLog("worker: start job %s", job.label)
+		err := job.fn()
 		scLog("worker: job done err=%v", err)
 		job.reply <- err
 	}
 }
 
+// runShortcutJob submits fn to the COM worker and waits for its result.
+func runShortcutJob(label string, fn func() error) error {
+	ensureShortcutWorker()
+	job := &shortcutJob{fn: fn, label: label, reply: make(chan error, 1)}
+	shortcutReqCh <- job
+	return <-job.reply
+}
+
 // doCreateShortcut performs the actual COM calls. MUST be called only from
 // shortcutWorkerLoop — relies on the worker's pre-initialized STA.
-func doCreateShortcut(job *shortcutJob) (retErr error) {
+func doCreateShortcut(lnkPath, exePath, workDir string) (retErr error) {
 	scLog("step 1: CreateObject WScript.Shell")
 	unknown, err := oleutil.CreateObject("WScript.Shell")
 	if err != nil {
@@ -127,8 +136,8 @@ func doCreateShortcut(job *shortcutJob) (retErr error) {
 		shell.Release()
 	}()
 
-	scLog("step 3: CallMethod CreateShortcut(%s)", job.lnkPath)
-	res, err := oleutil.CallMethod(shell, "CreateShortcut", job.lnkPath)
+	scLog("step 3: CallMethod CreateShortcut(%s)", lnkPath)
+	res, err := oleutil.CallMethod(shell, "CreateShortcut", lnkPath)
 	if err != nil {
 		return fmt.Errorf("CreateShortcut: %w", err)
 	}
@@ -148,16 +157,16 @@ func doCreateShortcut(job *shortcutJob) (retErr error) {
 	// to createDesktopShortcut this triggered an access violation inside
 	// VariantClear on a dangling pointer, crashing the daemon.
 
-	scLog("step 4a: set TargetPath=%s", job.exePath)
-	if _, err := oleutil.PutProperty(scDisp, "TargetPath", job.exePath); err != nil {
+	scLog("step 4a: set TargetPath=%s", exePath)
+	if _, err := oleutil.PutProperty(scDisp, "TargetPath", exePath); err != nil {
 		return fmt.Errorf("set TargetPath: %w", err)
 	}
-	scLog("step 4b: set WorkingDirectory=%s", job.workDir)
-	if _, err := oleutil.PutProperty(scDisp, "WorkingDirectory", job.workDir); err != nil {
+	scLog("step 4b: set WorkingDirectory=%s", workDir)
+	if _, err := oleutil.PutProperty(scDisp, "WorkingDirectory", workDir); err != nil {
 		return fmt.Errorf("set WorkingDirectory: %w", err)
 	}
-	scLog("step 4c: set IconLocation=%s,0", job.exePath)
-	if _, err := oleutil.PutProperty(scDisp, "IconLocation", job.exePath+",0"); err != nil {
+	scLog("step 4c: set IconLocation=%s,0", exePath)
+	if _, err := oleutil.PutProperty(scDisp, "IconLocation", exePath+",0"); err != nil {
 		return fmt.Errorf("set IconLocation: %w", err)
 	}
 	scLog("step 4c2: set Description")
@@ -175,14 +184,9 @@ func doCreateShortcut(job *shortcutJob) (retErr error) {
 // createDesktopShortcut is the public entry point. It resolves paths on the
 // caller's goroutine, then submits the COM work to the dedicated worker.
 func createDesktopShortcut() error {
-	ensureShortcutWorker()
-
-	exePath, err := os.Executable()
+	exePath, err := resolvedExePath()
 	if err != nil {
 		return fmt.Errorf("resolve exe: %w", err)
-	}
-	if real, err := filepath.EvalSymlinks(exePath); err == nil {
-		exePath = real
 	}
 
 	desktop, err := userDesktopPath()
@@ -190,16 +194,85 @@ func createDesktopShortcut() error {
 		return fmt.Errorf("resolve desktop: %w", err)
 	}
 
-	// 固定文件名为 CLIAnywhere.lnk。Windows .lnk 的显示名就是文件名本身，
-	// 所以桌面/开始菜单里显示的即为 CLIAnywhere；下面 Description 作为悬停提示。
-	job := &shortcutJob{
-		exePath: exePath,
-		workDir: filepath.Dir(exePath),
-		lnkPath: filepath.Join(desktop, "CLIAnywhere.lnk"),
-		reply:   make(chan error, 1),
+	// The .lnk filename is fixed as CLIAnywhere.lnk — a Windows .lnk shows
+	// its filename as the display name, so desktop/Start Menu show
+	// "CLIAnywhere"; the Description below serves as the hover tooltip.
+	lnkPath := filepath.Join(desktop, "CLIAnywhere.lnk")
+	workDir := filepath.Dir(exePath)
+
+	return runShortcutJob("create", func() error {
+		return doCreateShortcut(lnkPath, exePath, workDir)
+	})
+}
+
+// hasDesktopShortcut reports whether the desktop .lnk exists AND its target
+// points at the currently running executable. A shortcut pointing elsewhere
+// (e.g. the binary was moved/upgraded in place) counts as OFF.
+func hasDesktopShortcut() bool {
+	exePath, err := resolvedExePath()
+	if err != nil {
+		return false
+	}
+	desktop, err := userDesktopPath()
+	if err != nil {
+		return false
+	}
+	lnkPath := filepath.Join(desktop, "CLIAnywhere.lnk")
+	if _, err := os.Stat(lnkPath); err != nil {
+		return false
 	}
 
-	scLog("submit job to worker")
-	shortcutReqCh <- job
-	return <-job.reply
+	// Reading .lnk properties requires COM (same STA worker as create).
+	var target string
+	err = runShortcutJob("query", func() error {
+		unknown, err := oleutil.CreateObject("WScript.Shell")
+		if err != nil {
+			return fmt.Errorf("create WScript.Shell: %w", err)
+		}
+		defer unknown.Release()
+
+		shell, err := unknown.QueryInterface(ole.IID_IDispatch)
+		if err != nil {
+			return fmt.Errorf("query IDispatch: %w", err)
+		}
+		defer shell.Release()
+
+		res, err := oleutil.CallMethod(shell, "CreateShortcut", lnkPath)
+		if err != nil {
+			return fmt.Errorf("CreateShortcut: %w", err)
+		}
+		defer res.Clear()
+
+		scDisp := res.ToIDispatch()
+		if scDisp == nil {
+			return fmt.Errorf("CreateShortcut returned nil dispatch")
+		}
+		// Same ownership rule as doCreateShortcut: no scDisp.Release(),
+		// res.Clear() releases the inner dispatch.
+		tv, err := oleutil.GetProperty(scDisp, "TargetPath")
+		if err != nil {
+			return fmt.Errorf("get TargetPath: %w", err)
+		}
+		defer tv.Clear()
+		target = tv.ToString()
+		return nil
+	})
+	if err != nil {
+		scLog("query target failed: %v", err)
+		return false
+	}
+	return target != "" && samePath(target, exePath)
+}
+
+// removeDesktopShortcut deletes the desktop .lnk. No COM needed — plain delete.
+func removeDesktopShortcut() error {
+	desktop, err := userDesktopPath()
+	if err != nil {
+		return fmt.Errorf("resolve desktop: %w", err)
+	}
+	lnkPath := filepath.Join(desktop, "CLIAnywhere.lnk")
+	if err := os.Remove(lnkPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove .lnk: %w", err)
+	}
+	return nil
 }

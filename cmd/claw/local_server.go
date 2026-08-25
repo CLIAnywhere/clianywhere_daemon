@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"github.com/CLIAnywhere/clianywhere_daemon/internal/checkupdate"
 )
 
 // package-level logger, set by StartLocalServer
@@ -503,34 +505,110 @@ func (ls *LocalServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			})
 
 		case TypeShortcutResponse:
-			// User answered the ask_shortcut prompt OR pressed Add in Settings.
-			// Either way we mark it asked so the auto-prompt won't fire again;
-			// creation itself is unconditional on Success=true (manual re-add works).
+			// User dismissed the first-connection recommend dialog (confirm
+			// or cancel). Mark it asked either way so the prompt never fires
+			// again; actual creation happens via set_shortcut in Settings.
 			markShortcutAsked()
-			if msg.Success {
-				// Wrap in recover: a panic inside go-ole/syscall (e.g. nil
-				// dispatch, malformed VARIANT) used to crash this connection
-				// handler goroutine and appear as "daemon hung". Convert any
-				// panic into an error result so the user sees a SnackBar.
-				func() {
-					defer func() {
-						if r := recover(); r != nil {
-							ls.logger.Errorf("[SHORTCUT] panic during create: %v", r)
-							ls.send(conn, Message{
-								Type:  TypeShortcutResult,
-								Error: fmt.Sprintf("internal panic: %v", r),
-							})
-						}
-					}()
-					if err := createDesktopShortcut(); err != nil {
-						ls.logger.Errorf("[SHORTCUT] create desktop shortcut failed: %v", err)
-						ls.send(conn, Message{Type: TypeShortcutResult, Error: err.Error()})
-					} else {
-						ls.logger.Infof("[SHORTCUT] desktop shortcut created")
-						ls.send(conn, Message{Type: TypeShortcutResult, Success: true})
+
+		case TypeGetStartupStatus:
+			supported := autoRunSupported()
+			ls.send(conn, Message{
+				Type:              TypeStartupStatus,
+				Shortcut:          hasDesktopShortcut(),
+				AutoRun:           supported && hasAutoRun(),
+				AutoRunSupported:  supported,
+			})
+
+		case TypeSetShortcut:
+			// Any explicit user action here counts as "asked".
+			markShortcutAsked()
+			// Wrap in recover: a panic inside go-ole/syscall (e.g. nil
+			// dispatch, malformed VARIANT) used to crash this connection
+			// handler goroutine and appear as "daemon hung". Convert any
+			// panic into an error result so the user sees a SnackBar.
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						ls.logger.Errorf("[SHORTCUT] panic during set: %v", r)
+						ls.send(conn, Message{
+							Type:    TypeSetShortcutResult,
+							Error:   fmt.Sprintf("internal panic: %v", r),
+							Shortcut: hasDesktopShortcut(),
+						})
 					}
 				}()
+				var err error
+				if msg.Enable {
+					err = createDesktopShortcut()
+				} else {
+					err = removeDesktopShortcut()
+				}
+				if err != nil {
+					ls.logger.Errorf("[SHORTCUT] set shortcut(enable=%v) failed: %v", msg.Enable, err)
+					ls.send(conn, Message{Type: TypeSetShortcutResult, Error: err.Error(), Shortcut: hasDesktopShortcut()})
+				} else {
+					ls.logger.Infof("[SHORTCUT] shortcut %s", map[bool]string{true: "created", false: "removed"}[msg.Enable])
+					ls.send(conn, Message{Type: TypeSetShortcutResult, Success: true, Shortcut: hasDesktopShortcut()})
+				}
+			}()
+
+		case TypeSetAutoRun:
+			var err error
+			if msg.Enable {
+				if !autoRunSupported() {
+					err = fmt.Errorf("auto run is not supported in this environment (systemd not available)")
+				} else {
+					err = enableAutoRun()
+				}
+			} else {
+				err = disableAutoRun()
 			}
+			if err != nil {
+				ls.logger.Errorf("[AUTORUN] set autorun(enable=%v) failed: %v", msg.Enable, err)
+				ls.send(conn, Message{Type: TypeSetAutoRunResult, Error: err.Error(), AutoRun: hasAutoRun()})
+			} else {
+				ls.logger.Infof("[AUTORUN] autorun %s", map[bool]string{true: "enabled", false: "disabled"}[msg.Enable])
+				ls.send(conn, Message{Type: TypeSetAutoRunResult, Success: true, AutoRun: hasAutoRun()})
+			}
+
+		case TypeCheckUpdate:
+			// async: GitHub API round-trip must not block the read loop
+			go func() {
+				res, err := checkupdate.CheckUpdate(Version)
+				if err != nil {
+					ls.send(conn, Message{Type: TypeCheckUpdateResult, Error: err.Error()})
+					return
+				}
+				ls.send(conn, Message{
+					Type:            TypeCheckUpdateResult,
+					Success:         true,
+					CurrentVersion:  res.Current,
+					LatestVersion:   res.Latest,
+					UpdateAvailable: res.Available,
+				})
+			}()
+
+		case TypeApplyUpdate:
+			// async: download + installer launch must not block the read loop
+			go func() {
+				res, err := checkupdate.CheckUpdate(Version)
+				if err != nil {
+					ls.send(conn, Message{Type: TypeApplyUpdateResult, Error: err.Error()})
+					return
+				}
+				if !res.Available {
+					ls.send(conn, Message{Type: TypeApplyUpdateResult, Success: true, Data: "already up to date"})
+					return
+				}
+				ls.send(conn, Message{Type: TypeApplyUpdateResult, Success: true, Data: "downloading"})
+				ls.logger.Infof("[UPDATE] applying update %s -> %s", res.Current, res.Latest)
+				if err := checkupdate.ApplyUpdate(res); err != nil {
+					ls.logger.Errorf("[UPDATE] apply failed: %v", err)
+					ls.send(conn, Message{Type: TypeApplyUpdateResult, Error: err.Error()})
+				}
+				// On success ApplyUpdate never returns (process exits for the
+				// installer to replace files), so no final message is sent.
+			}()
 
 		default:
 			// ignore unknown type

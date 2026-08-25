@@ -41,13 +41,9 @@ func appBundlePath(exePath string) string {
 // (go build / go run) still gets the legacy .command script that opens Terminal
 // and execs the binary, keeping logs visible with Ctrl+C to stop.
 func createDesktopShortcut() error {
-	exePath, err := os.Executable()
+	exePath, err := resolvedExePath()
 	if err != nil {
 		return fmt.Errorf("resolve exe: %w", err)
-	}
-	// Resolve symlinks so the path points at the real binary (homebrew, etc.).
-	if real, err := filepath.EvalSymlinks(exePath); err == nil {
-		exePath = real
 	}
 
 	desktop, err := userDesktopPath()
@@ -93,5 +89,84 @@ func createDesktopShortcut() error {
 	// otherwise Terminal will refuse to run the script until the user clicks
 	// through Gatekeeper. Best-effort: ignore errors.
 	_ = removeQuarantineAttr(commandPath)
+	return nil
+}
+
+// hasDesktopShortcut reports whether a desktop launcher exists that points at
+// the current process:
+//   - packaged: ~/Desktop/CLIAnywhere.app is a symlink resolving to the current
+//     app bundle
+//   - bare binary: ~/Desktop/CLIAnywhere.command exists and its script execs
+//     the current binary
+//
+// Anything else (missing, pointing elsewhere) counts as OFF.
+func hasDesktopShortcut() bool {
+	exePath, err := resolvedExePath()
+	if err != nil {
+		return false
+	}
+	desktop, err := userDesktopPath()
+	if err != nil {
+		return false
+	}
+
+	// Packaged .app symlink.
+	linkPath := filepath.Join(desktop, "CLIAnywhere.app")
+	if fi, err := os.Lstat(linkPath); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		if appPath := appBundlePath(exePath); appPath != "" {
+			if target, err := os.Readlink(linkPath); err == nil {
+				// Resolve both sides so /Applications vs /Applications/ links
+				// with intermediate symlinks compare equal.
+				if realLink, err := filepath.EvalSymlinks(target); err == nil {
+					target = realLink
+				}
+				if realApp, err := filepath.EvalSymlinks(appPath); err == nil {
+					appPath = realApp
+				}
+				if samePath(target, appPath) {
+					return true
+				}
+			}
+		}
+	}
+
+	// Legacy .command script: check the exec'd binary path inside the script.
+	commandPath := filepath.Join(desktop, "CLIAnywhere.command")
+	if data, err := os.ReadFile(commandPath); err == nil {
+		return strings.Contains(string(data), exePath)
+	}
+	return false
+}
+
+// removeDesktopShortcut deletes both launcher forms from the desktop.
+// Removing a non-symlink CLIAnywhere.app (a real bundle the user put there)
+// is refused — we only delete what we created.
+func removeDesktopShortcut() error {
+	desktop, err := userDesktopPath()
+	if err != nil {
+		return fmt.Errorf("resolve desktop: %w", err)
+	}
+
+	removed := false
+
+	linkPath := filepath.Join(desktop, "CLIAnywhere.app")
+	if fi, err := os.Lstat(linkPath); err == nil {
+		if fi.Mode()&os.ModeSymlink == 0 {
+			return fmt.Errorf("%s exists and is not a symlink", linkPath)
+		}
+		if err := os.Remove(linkPath); err != nil {
+			return fmt.Errorf("remove symlink: %w", err)
+		}
+		removed = true
+	}
+
+	commandPath := filepath.Join(desktop, "CLIAnywhere.command")
+	if err := os.Remove(commandPath); err == nil {
+		removed = true
+	}
+
+	if !removed {
+		return fmt.Errorf("no desktop shortcut found")
+	}
 	return nil
 }

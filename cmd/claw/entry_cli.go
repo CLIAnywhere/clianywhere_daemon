@@ -35,6 +35,14 @@ func main() {
 			ensureConsole()
 			fmt.Printf("daemon_go %s\n", Version)
 			return
+		case "checkupdate":
+			ensureConsole()
+			handleCheckUpdate()
+			return
+		case "update":
+			ensureConsole()
+			handleUpdate()
+			return
 		case "status":
 			ensureConsole()
 			handleStatus()

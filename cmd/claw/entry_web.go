@@ -64,15 +64,33 @@ func main() {
 		SetForceTSAddr(tsAddr)
 	}
 
+	// --autostart: launched by the OS autostart entry (HKCU Run key /
+	// LaunchAgent / systemd user unit). Silent mode: never opens a browser
+	// and exits quietly when another instance is already running.
+	args := os.Args[1:]
+	autostartMode := false
+	if len(args) > 0 && args[0] == "--autostart" {
+		autostartMode = true
+		args = args[1:]
+	}
+
 	// subcommand dispatch
-	if len(os.Args) >= 2 {
-		switch os.Args[1] {
+	if len(args) >= 1 {
+		switch args[0] {
 		case "send":
 			handleSend()
 			return
 		case "version":
 			ensureConsole()
 			fmt.Printf("daemon_go %s\n", Version)
+			return
+		case "checkupdate":
+			ensureConsole()
+			handleCheckUpdate()
+			return
+		case "update":
+			ensureConsole()
+			handleUpdate()
 			return
 		case "status":
 			ensureConsole()
@@ -84,7 +102,7 @@ func main() {
 			return
 		default:
 			ensureConsole()
-			fmt.Printf("'%s' is not supported yet\n", os.Args[1])
+			fmt.Printf("'%s' is not supported yet\n", args[0])
 			os.Exit(1)
 		}
 	}
@@ -95,6 +113,11 @@ func main() {
 	// 1. Check if another instance is already running
 	if isLocked() {
 		writeEarlyLog("another instance already running")
+		if autostartMode {
+			// Autostart races a manual launch: the manual instance wins,
+			// the autostart one exits without touching the browser.
+			return
+		}
 		webPort := loadWebappPort()
 		if webPort == -1 {
 			webPort = 17900
@@ -112,6 +135,10 @@ func main() {
 	childPort := forkToBackground()
 	if childPort > 0 {
 		// Parent process: child reported its port
+		if autostartMode {
+			// Login-triggered start: no browser, just get out of the way.
+			os.Exit(0)
+		}
 		url := fmt.Sprintf("http://127.0.0.1:%d", childPort)
 		fmt.Printf("Web terminal starting at %s\n", url)
 		openBrowser(url)
@@ -167,11 +194,18 @@ func main() {
 	// Windows: open browser here (Unix: parent already opened it)
 	fmt.Printf("Web terminal at %s\n", url)
 	writeEarlyLog(fmt.Sprintf("webapp started at %s", url))
-	if err := openBrowser(url); err != nil {
-		fmt.Printf("Please open this URL manually: %s\n", url)
-	}
-	if d.localServer != nil {
-		d.localServer.StartBrowserWatch(url)
+	if autostartMode {
+		// Silent start: no browser, and no browser-failure watch either —
+		// StartBrowserWatch would pop a native alert after its timeout since
+		// no browser client is ever expected to connect on its own here.
+		writeEarlyLog("autostart mode: skipping browser open")
+	} else {
+		if err := openBrowser(url); err != nil {
+			fmt.Printf("Please open this URL manually: %s\n", url)
+		}
+		if d.localServer != nil {
+			d.localServer.StartBrowserWatch(url)
+		}
 	}
 
 	waitForSignal(d, logger)
