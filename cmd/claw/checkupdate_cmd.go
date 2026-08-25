@@ -60,7 +60,17 @@ func handleUpdate() {
 // check, print details, ask for confirmation (Y), then apply. Runs in the
 // CLI parent process — the update replaces the binary this process is
 // running from; the new version takes effect after restart.
+//
+// The menu redraw clears the screen on return, so all output is followed by
+// a "press Enter" pause — otherwise results flash and vanish.
 func handleCheckUpdateInteractive() {
+	defer func() {
+		fmt.Print("\nPress Enter to return to the menu... ")
+		var dummy string
+		fmt.Scanln(&dummy) // empty Enter errors out immediately; fine
+	}()
+
+	fmt.Println("Checking for updates...")
 	res, err := checkupdate.CheckUpdate(Version)
 	if err != nil {
 		fmt.Printf("Check update failed: %v\n", err)
