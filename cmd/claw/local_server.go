@@ -379,9 +379,10 @@ func (ls *LocalServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case TypeGetServerStatus:
 			state := ls.daemon.GetState()
 			ls.send(conn, Message{
-				Type:      TypeServerStatus,
-				Data:      state,
-				AccessKey: ls.daemon.accessKey,
+				Type:           TypeServerStatus,
+				Data:           state,
+				AccessKey:      ls.daemon.accessKey,
+				CurrentVersion: Version,
 			})
 
 		case TypeSetAccessKey:
