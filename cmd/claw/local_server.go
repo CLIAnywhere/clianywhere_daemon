@@ -16,6 +16,10 @@ import (
 	"github.com/CLIAnywhere/clianywhere_daemon/internal/checkupdate"
 )
 
+// applyUpdateInFlight guards the update download/apply against concurrent
+// requests from different web clients (reopened browser tabs).
+var applyUpdateInFlight atomic.Bool
+
 // package-level logger, set by StartLocalServer
 var localWSDebugLogger Logger
 
@@ -592,6 +596,15 @@ func (ls *LocalServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case TypeApplyUpdate:
 			// async: download + installer launch must not block the read loop
 			go func() {
+				// re-entry guard: a second apply_update (e.g. user closed and
+				// reopened the browser mid-download) must not run a parallel
+				// download to the same .part file (corruption) or launch a
+				// second installer.
+				if !applyUpdateInFlight.CompareAndSwap(false, true) {
+					ls.send(conn, Message{Type: TypeApplyUpdateResult, Error: "update already in progress"})
+					return
+				}
+				defer applyUpdateInFlight.Store(false)
 				checkupdate.SetLogger(ls.logger)
 				res, err := checkupdate.CheckUpdate(Version)
 				if err != nil {
