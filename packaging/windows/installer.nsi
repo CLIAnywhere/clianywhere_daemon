@@ -43,6 +43,14 @@ ShowUninstDetails show
 !insertmacro MUI_LANGUAGE "English"
 
 Section "Install"
+  ; Stop a running instance so files can be overwritten:
+  ; first try graceful close (WM_CLOSE), then force-kill leftovers.
+  nsExec::ExecToLog 'taskkill /T /IM ${APP_EXE}'
+  Pop $0
+  Sleep 1500
+  nsExec::ExecToLog 'taskkill /F /T /IM ${APP_EXE}'
+  Pop $0
+
   SetOutPath "$INSTDIR"
   File "${APP_EXE}"
   WriteUninstaller "$INSTDIR\uninstall.exe"
@@ -52,6 +60,7 @@ Section "Install"
   CreateDirectory "$SMPROGRAMS\${PRODUCT}"
   CreateShortcut "$SMPROGRAMS\${PRODUCT}\${PRODUCT}.lnk" "$INSTDIR\${APP_EXE}" "" "$INSTDIR\${APP_EXE}" 0
   CreateShortcut "$SMPROGRAMS\${PRODUCT}\Uninstall ${PRODUCT}.lnk" "$INSTDIR\uninstall.exe"
+  CreateShortcut "$DESKTOP\${PRODUCT}.lnk" "$INSTDIR\${APP_EXE}" "" "$INSTDIR\${APP_EXE}" 0
 
   ; Registry: remember install dir + Add/Remove Programs entry (per-user)
   WriteRegStr HKCU "Software\${PRODUCT}" "InstallDir" "$INSTDIR"
@@ -69,10 +78,15 @@ Section "Install"
 SectionEnd
 
 Section "Uninstall"
+  ; Stop a running instance before removing files
+  nsExec::ExecToLog 'taskkill /F /T /IM ${APP_EXE}'
+  Pop $0
+
   ; Shortcuts
   SetShellVarContext current
   Delete "$SMPROGRAMS\${PRODUCT}\${PRODUCT}.lnk"
   Delete "$SMPROGRAMS\${PRODUCT}\Uninstall ${PRODUCT}.lnk"
+  Delete "$DESKTOP\${PRODUCT}.lnk"
   RMDir "$SMPROGRAMS\${PRODUCT}"
 
   ; Binaries only — keep user config (config.yaml etc.) in $INSTDIR
