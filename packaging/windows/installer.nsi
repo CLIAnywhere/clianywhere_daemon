@@ -93,13 +93,23 @@ Section "Install"
   IntFmt $0 "0x%08X" $0
   WriteRegDWORD HKCU "${UNINST_KEY}" "EstimatedSize" "$0"
 
-  ; Silent install (/S): no finish page is shown, so if an instance was
-  ; running before the upgrade, restart it now to restore prior state.
+  ; Silent install (/S): no finish page is shown, so restart the app to
+  ; restore prior state. Two triggers:
+  ;   1. /restart on the command line — the self-update flow. The daemon
+  ;      exits itself right after spawning the installer, so the taskkill
+  ;      detection below misses it ($R0 stays 0) and an explicit flag is
+  ;      the only reliable signal.
+  ;   2. $R0 == 1 — a running instance was found (and killed) above; covers
+  ;      manual silent installs over a live daemon.
   ; Pass --autostart so the daemon runs quietly without opening a browser
   ; (the user was using it before; a manual launch opens the browser).
-  ${If} $R0 == 1
-  ${AndIf} ${Silent}
-    Exec '"$INSTDIR\${APP_EXE}" --autostart'
+  ClearErrors
+  ${GetOptions} `$CMDLINE` `/restart' $R1
+  ${If} ${Silent}
+    ${If} $R0 == 1
+    ${OrIfNot} ${Errors}
+      Exec '"$INSTDIR\${APP_EXE}" --autostart'
+    ${EndIf}
   ${EndIf}
 SectionEnd
 

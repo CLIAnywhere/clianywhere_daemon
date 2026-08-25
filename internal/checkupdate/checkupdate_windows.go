@@ -34,15 +34,18 @@ func ApplyUpdate(res *Result) error {
 		return err
 	}
 
-	// /S = NSIS silent install. Launch fully detached so the installer
+	// /S = NSIS silent install, /restart = have the installer relaunch the
+	// daemon with --autostart afterwards (the daemon exits itself before the
+	// installer's taskkill can detect it, so presence detection won't fire).
+	// Launch fully detached so the installer
 	// survives this process exiting (and being killed):
 	//   DETACHED_PROCESS          — no console sharing (console death kills the group)
 	//   CREATE_NEW_PROCESS_GROUP  — immune to parent's Ctrl+C / group signals
 	//   CREATE_BREAKAWAY_FROM_JOB — escape job objects marked kill-on-close,
 	//                               which would otherwise take the installer
 	//                               down with the daemon
-	logger.Infof("[UPDATE] launching installer (detached): %s /S", path)
-	if err := startDetached(path, "/S"); err != nil {
+	logger.Infof("[UPDATE] launching installer (detached): %s /S /restart", path)
+	if err := startDetached(path, "/S", "/restart"); err != nil {
 		logger.Errorf("[UPDATE] failed to start installer %s: %v", path, err)
 		return fmt.Errorf("checkupdate: start installer: %w", err)
 	}
