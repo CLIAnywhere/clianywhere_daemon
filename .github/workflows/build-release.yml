@@ -9,7 +9,7 @@ name: Build Release
 #   3. actions/upload-artifact and download-artifact are intentionally not used
 #
 # Artifacts:
-#   CLIAnywhere-windows-setup-vX.Y.Z.exe (Windows GUI installer, NSIS, per-user install)
+#   clianywhere-setup.exe          (Windows GUI installer, NSIS, per-user install)
 #   CLIAnywhere-macos.dmg              (macOS universal Intel+Apple Silicon, signed + notarized)
 #   claw-linux-desktop-amd64.zip (Linux web)
 #   claw-linux-cli-amd64.zip     (Linux CLI)
@@ -160,7 +160,7 @@ jobs:
             sudo apt-get update -qq
             sudo apt-get install -y -qq nsis
             makensis -NOCD -DVERSION="${TAG#v}" packaging/windows/installer.nsi
-            asset="CLIAnywhere-windows-setup-v${TAG#v}.exe"
+            asset="clianywhere-setup.exe"
           else
             # Pack only the binary; do not include sources or other files.
             zip '${{ matrix.archive }}' '${{ matrix.bin }}'

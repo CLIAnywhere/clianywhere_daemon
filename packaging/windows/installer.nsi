@@ -21,7 +21,7 @@ Unicode true
 !define UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT}"
 
 Name "${PRODUCT} ${VERSION}"
-OutFile "CLIAnywhere-windows-setup-v${VERSION}.exe"
+OutFile "clianywhere-setup.exe"
 InstallDir "$PROFILE\.clianywhere"
 ; Reuse install dir from a previous install if present
 InstallDirRegKey HKCU "Software\${PRODUCT}" "InstallDir"
