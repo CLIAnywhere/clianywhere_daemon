@@ -9,7 +9,7 @@ import (
 
 // selfBuildNotice is shown when a self-built (non-office) binary tries to
 // apply an update — see buildtag_office.go / buildtag_default.go.
-const selfBuildNotice = "This binary was built by you, not from an official release. To update, fetch the latest source and rebuild it yourself (git pull && go build)."
+const selfBuildNotice = "This binary was built by you, not from an official release. To update, run git pull, then run the build script for your platform."
 
 // handleCheckUpdate implements the "checkupdate" subcommand: query the latest
 // GitHub release and report whether an update is available.
