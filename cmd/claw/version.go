@@ -5,4 +5,4 @@ package main
 // globalserver can track per-device daemon versions.
 //
 // Bump this manually for each release. Init: 1.0.1.
-var Version = "1.0.5"
+var Version = "1.0.6"
