@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,7 +19,11 @@ const (
 	serversURL       = "https://cfg.clianywhere.com/servers.json"
 	serversCacheDir  = ".clianywhere"
 	serversCacheFile = "servers.json"
-	healthThreshold  = 0.99
+
+	// probeTimeout shared deadline for the concurrent /health probe round:
+	// all servers are probed in parallel with one 2s budget, so the whole
+	// ranking phase is bounded by ~2s regardless of server count.
+	probeTimeout = 2 * time.Second
 
 	// location cache: ~/.clianywhere/location.cache, format "num|unix_seconds"
 	locationCacheFile = "location.cache"
@@ -56,15 +61,6 @@ type HealthResponse struct {
 	Alive        bool    `json:"alive"`
 	BrowserCount int     `json:"browser_count"`
 	Health       float64 `json:"health"`
-}
-
-// probeResult latency probe result for one TS
-type probeResult struct {
-	server  ServerEntry
-	latency time.Duration
-	health  float64
-	alive   bool
-	err     error
 }
 
 // cachePath returns the full path for the cached servers.json
@@ -297,75 +293,77 @@ func GetLocalInfo(logger Logger) (int, error) {
 	return num, nil
 }
 
-// probeServer probes a single TS server: call health URL twice, record second call latency
-func probeServer(server ServerEntry, logger Logger) probeResult {
-	result := probeResult{server: server}
-	addr := server.Addr
-
-	client := &http.Client{Timeout: 5 * time.Second}
-
-	// first call — warm up DNS, discard timing
-	if logger != nil {
-		logger.Debugf("[TS] probing %s (warmup request)", addr)
-	}
-	resp, err := client.Get(server.Health)
+// probeHealthOnce probes a single TS server's /health endpoint once.
+// ctx carries the shared 2s budget of the whole probe round.
+// Any failure (timeout, HTTP error, malformed response, not alive) yields 1.0
+// (max load), so the server sinks to the bottom of the ranked list but is
+// still eligible for connection — a dead health endpoint does not imply a
+// dead WebSocket endpoint.
+func probeHealthOnce(ctx context.Context, server ServerEntry, logger Logger) float64 {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, server.Health, nil)
 	if err != nil {
-		result.err = fmt.Errorf("first health check failed: %w", err)
 		if logger != nil {
-			logger.Warnf("[TS] %s warmup request failed: %v", addr, err)
+			logger.Warnf("[TS] probe %s: build request failed: %v", server.Addr, err)
 		}
-		return result
+		return 1.0
 	}
-	io.ReadAll(resp.Body)
-	resp.Body.Close()
-
-	// second call — measure latency
-	if logger != nil {
-		logger.Debugf("[TS] probing %s (measuring latency)", addr)
-	}
-	start := time.Now()
-	resp, err = client.Get(server.Health)
+	client := &http.Client{}
+	resp, err := client.Do(req)
 	if err != nil {
-		result.err = fmt.Errorf("second health check failed: %w", err)
 		if logger != nil {
-			logger.Warnf("[TS] %s latency request failed: %v", addr, err)
+			logger.Warnf("[TS] probe %s failed: %v", server.Addr, err)
 		}
-		return result
+		return 1.0
 	}
-	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	result.latency = time.Since(start)
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		if logger != nil {
+			logger.Warnf("[TS] probe %s: read body failed: %v", server.Addr, err)
+		}
+		return 1.0
+	}
 
 	var hr HealthResponse
 	if err := json.Unmarshal(body, &hr); err != nil {
-		result.err = fmt.Errorf("parse health response failed: %w", err)
-		return result
+		if logger != nil {
+			logger.Warnf("[TS] probe %s: parse response failed: %v (body=%s)", server.Addr, err, string(body))
+		}
+		return 1.0
 	}
-
-	result.alive = hr.Alive
-	result.health = hr.Health
+	if !hr.Alive {
+		if logger != nil {
+			logger.Warnf("[TS] probe %s: not alive", server.Addr)
+		}
+		return 1.0
+	}
 
 	if logger != nil {
-		logger.Infof("[TS] %s latency=%dms health=%.4f alive=%v browsers=%d",
-			addr, result.latency.Milliseconds(), result.health, result.alive, hr.BrowserCount)
+		logger.Debugf("[TS] probe %s: health=%.4f", server.Addr, hr.Health)
 	}
-
-	return result
+	return hr.Health
 }
 
-// SelectBestTurnServer full TS selection flow:
-//  1. ForceTSAddr short-circuit (forced via env)
+// RankTurnServers full TS ranking flow, returns a connect-ordered server list
+// plus the number of local-region servers at its head:
+//  1. ForceTSAddr short-circuit (forced via config)
 //  2. GetLocalInfo to get the continent number (1-7)
-//  3. Fetch servers.json, look up this continent's server list by numeric key ("1".."7")
-//  4. Probe each /health concurrently; pick the lowest health (load ratio, lower=more idle);
-//     tie-break by lowest latency; if the continent has no servers, fall back to "5" (NA)
-func SelectBestTurnServer(logger Logger) (*TurnServerEntry, error) {
+//  3. Fetch servers.json, flatten all regions and dedupe by Addr
+//  4. Probe every server's /health concurrently under one shared 2s timeout;
+//     failed probes score health=1.0 and sink to the bottom of their group
+//  5. Sort: local-region servers first, then the rest; within each group by
+//     health ascending (lower = more idle)
+//
+// The caller walks the list top-down trying to connect; localCount marks the
+// retry boundary (local healthy servers get one retry, everything else one shot).
+func RankTurnServers(logger Logger) ([]TurnServerEntry, int, error) {
 	// ForceTSAddr short-circuit
 	if cfg := loadForceTSAddr(); cfg != "" {
 		if logger != nil {
 			logger.Infof("[TS] ForceTSAddr set, using %s directly", cfg)
 		}
-		return &TurnServerEntry{Addr: cfg}, nil
+		return []TurnServerEntry{{Addr: cfg}}, 1, nil
 	}
 
 	// 1. get continent number
@@ -375,99 +373,66 @@ func SelectBestTurnServer(logger Logger) (*TurnServerEntry, error) {
 	// 2. fetch servers.json
 	all, err := FetchServers(logger)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
-	// 3. look up this continent's servers; fall back to "5" (NA) if empty
-	servers := all[regionKey]
-	if len(servers) == 0 && regionKey != strconv.Itoa(defaultLocationNum) {
-		if logger != nil {
-			logger.Warnf("[TS] no servers in region %s, fallback to %d", regionKey, defaultLocationNum)
+	// 3. flatten all regions and dedupe by Addr
+	// (the same machine may be listed under multiple region keys)
+	type flatEntry struct {
+		ServerEntry
+		local bool
+	}
+	seen := make(map[string]bool)
+	var flat []flatEntry
+	for region, servers := range all {
+		for _, s := range servers {
+			if s.Addr == "" || seen[s.Addr] {
+				continue
+			}
+			seen[s.Addr] = true
+			flat = append(flat, flatEntry{ServerEntry: s, local: region == regionKey})
 		}
-		regionKey = strconv.Itoa(defaultLocationNum)
-		servers = all[regionKey]
 	}
-	if len(servers) == 0 {
-		return nil, fmt.Errorf("no servers available for region %s", regionKey)
+	if len(flat) == 0 {
+		return nil, 0, fmt.Errorf("servers.json has no servers at all")
 	}
 
-	// single server in this region: use it directly, skip health probe.
-	// no alternative to pick anyway; if it's down the WebSocket dial will fail
-	// and the relay loop's reconnect backoff takes over.
-	if len(servers) == 1 {
-		if logger != nil {
-			logger.Infof("[TS] only one server in region %s, using %s directly", regionKey, servers[0].Addr)
-		}
-		return &TurnServerEntry{Addr: servers[0].Addr}, nil
-	}
-
-	// 4. probe /health concurrently
-	results := make([]probeResult, len(servers))
+	// 4. probe /health concurrently under one shared 2s budget
+	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+	defer cancel()
+	healths := make([]float64, len(flat))
 	var wg sync.WaitGroup
-	for i, s := range servers {
+	for i := range flat {
 		wg.Add(1)
 		go func(idx int, srv ServerEntry) {
 			defer wg.Done()
-			results[idx] = probeServer(srv, logger)
-		}(i, s)
+			healths[idx] = probeHealthOnce(ctx, srv, logger)
+		}(i, flat[i].ServerEntry)
 	}
 	wg.Wait()
 
-	// candidates: alive && health < 0.99
-	var candidates []*probeResult
-	for i := range results {
-		r := &results[i]
-		if r.err != nil {
-			if logger != nil {
-				logger.Warnf("[TS] server %s probe failed: %v", r.server.Addr, r.err)
-			}
-			continue
-		}
-		if !r.alive {
-			if logger != nil {
-				logger.Warnf("[TS] server %s not alive", r.server.Addr)
-			}
-			continue
-		}
-		if r.health >= healthThreshold {
-			if logger != nil {
-				logger.Warnf("[TS] server %s health=%.4f >= %.2f, skipping", r.server.Addr, r.health, healthThreshold)
-			}
-			continue
-		}
-		candidates = append(candidates, r)
-	}
-
-	// fallback: no healthy candidate; take the least-loaded among successfully probed
-	if len(candidates) == 0 {
-		for i := range results {
-			r := &results[i]
-			if r.err != nil {
-				continue
-			}
-			candidates = append(candidates, r)
-		}
-		if len(candidates) > 0 && logger != nil {
-			logger.Warnf("[TS] no healthy server in region %s, fallback to least-loaded among probed", regionKey)
+	// 5. sort: local region first, then by health ascending within each group
+	entries := make([]TurnServerEntry, len(flat))
+	localCount := 0
+	for i, e := range flat {
+		entries[i] = TurnServerEntry{Addr: e.Addr, Health: healths[i], Local: e.local}
+		if e.local {
+			localCount++
 		}
 	}
-	if len(candidates) == 0 {
-		return nil, fmt.Errorf("no server available among %d candidates in region %s (all probes failed)", len(servers), regionKey)
-	}
-
-	// prefer lowest health; tie-break by lowest latency
-	sort.SliceStable(candidates, func(i, j int) bool {
-		if candidates[i].health != candidates[j].health {
-			return candidates[i].health < candidates[j].health
+	sort.SliceStable(entries, func(i, j int) bool {
+		if entries[i].Local != entries[j].Local {
+			return entries[i].Local
 		}
-		return candidates[i].latency < candidates[j].latency
+		return entries[i].Health < entries[j].Health
 	})
-	best := candidates[0]
 
 	if logger != nil {
-		logger.Infof("[TS] selected %s (region=%s, health=%.4f, latency=%dms) from %d candidates",
-			best.server.Addr, regionKey, best.health, best.latency.Milliseconds(), len(servers))
+		logger.Infof("[TS] ranked %d servers (region=%s local=%d):", len(entries), regionKey, localCount)
+		for i, e := range entries {
+			logger.Infof("[TS] #%d %s (health=%.4f local=%v)", i+1, e.Addr, e.Health, e.Local)
+		}
 	}
 
-	return &TurnServerEntry{Addr: best.server.Addr}, nil
+	return entries, localCount, nil
 }

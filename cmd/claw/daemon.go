@@ -478,11 +478,11 @@ func (d *Daemon) tsRelayLoop(ctx context.Context) {
 		default:
 		}
 
-		// 1. probe TS servers and select best
+		// 1. rank TS servers: local region first (health asc), then others (health asc)
 		d.notifyState("connecting")
-		best, err := SelectBestTurnServer(d.logger)
+		list, localCount, err := RankTurnServers(d.logger)
 		if err != nil {
-			d.logger.Errorf("[TS] select turn server failed: %v", err)
+			d.logger.Errorf("[TS] rank turn servers failed: %v", err)
 			switch d.sleepOrStopCtx(ctx, reconnectDelay()) {
 			case tsSleepStop:
 				d.notifyState("stopped")
@@ -492,7 +492,7 @@ func (d *Daemon) tsRelayLoop(ctx context.Context) {
 			}
 			continue
 		}
-		if best == nil {
+		if len(list) == 0 {
 			d.logger.Errorf("[TS] no turn server available")
 			switch d.sleepOrStopCtx(ctx, reconnectDelay()) {
 			case tsSleepStop:
@@ -504,41 +504,58 @@ func (d *Daemon) tsRelayLoop(ctx context.Context) {
 			continue
 		}
 
-		// 2. connecting directly to TS
-		relay := NewWSTurnRelay(d.accessKey, d.cfg, d.logger)
-		relay.SecCodeEnabled = HasSecurityCode()
-		relay.SecureCap = true
-		relay.OnMessage = func(msg *Message) {
-			d.handleMessage(msg, "TS")
-		}
-		relay.OnBinaryMessage = func(data []byte) {
-			d.handleBinary(data)
-		}
-		relay.OnP2PSignal = func(raw map[string]any) {
-			d.handleP2PSignal(raw)
-		}
-
-		if err := relay.Connect(best.WSURL()); err != nil {
-			// login failed (invalid accesskey etc.): log error and exit, no reconnect
-			if _, ok := err.(*LoginError); ok {
-				d.logger.Errorf("[TS] login failed: %v", err)
-				d.notifyState("stopped")
-				return
+		// 2. try connect walking the ranked list top-down:
+		//    local-region servers whose probe succeeded (health<1) get one retry,
+		//    everything else (remote region, or probe failed) is tried once.
+		var relay *WSTurnRelay
+		for i, ts := range list {
+			attempts := 1
+			if i < localCount && ts.Health < 1.0 {
+				attempts = 2
 			}
-			// IP blocked by TurnServer (same-day ban): long backoff
-			if _, ok := err.(*IPBlockedError); ok {
-				d.logger.Errorf("[TS] %v (retry in 1h)", err)
-				switch d.sleepOrStopCtx(ctx, 1*time.Hour) {
-				case tsSleepStop:
-					d.notifyState("stopped")
-					return
-				case tsSleepCancel:
-					return
+			for attempt := 1; attempt <= attempts; attempt++ {
+				r := NewWSTurnRelay(d.accessKey, d.cfg, d.logger)
+				r.SecCodeEnabled = HasSecurityCode()
+				r.SecureCap = true
+				r.OnMessage = func(msg *Message) {
+					d.handleMessage(msg, "TS")
 				}
-				continue
+				r.OnBinaryMessage = func(data []byte) {
+					d.handleBinary(data)
+				}
+				r.OnP2PSignal = func(raw map[string]any) {
+					d.handleP2PSignal(raw)
+				}
+
+				if err := r.Connect(ts.WSURL()); err != nil {
+					// login failed (invalid accesskey etc.): same on every server,
+					// log error and exit, no reconnect
+					if _, ok := err.(*LoginError); ok {
+						d.logger.Errorf("[TS] login failed: %v", err)
+						d.notifyState("stopped")
+						return
+					}
+					// IP blocked by TurnServer (malicious machine): terminate immediately
+					if _, ok := err.(*IPBlockedError); ok {
+						d.logger.Errorf("[TS] %v, terminating", err)
+						d.notifyState("stopped")
+						return
+					}
+					// other connection errors: move on to the next attempt / server
+					d.logger.Errorf("[TS] connect %s failed (attempt %d/%d): %v", ts.Addr, attempt, attempts, err)
+					continue
+				}
+				relay = r
+				break
 			}
-			// other connection errors: retry
-			d.logger.Errorf("[TS] connection failed: %v", err)
+			if relay != nil {
+				break
+			}
+		}
+		if relay == nil {
+			// every server in the ranked list failed; end this round,
+			// the outer loop backs off and re-ranks from scratch
+			d.logger.Errorf("[TS] all %d servers failed, backing off", len(list))
 			switch d.sleepOrStopCtx(ctx, reconnectDelay()) {
 			case tsSleepStop:
 				d.notifyState("stopped")

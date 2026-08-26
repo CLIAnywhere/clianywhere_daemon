@@ -38,11 +38,12 @@ func GenerateBindCode(cfg *Config) (*BindCodeResult, error) {
 	hostname, _ := os.Hostname()
 	deviceInfo := fmt.Sprintf("%s|%s", hostname, runtime.GOOS)
 
-	// get TurnServer
-	tsEntry, err := SelectBestTurnServer(nil)
-	if err != nil || tsEntry == nil {
+	// get TurnServer (best-ranked server of the local region)
+	ranked, _, err := RankTurnServers(nil)
+	if err != nil || len(ranked) == 0 {
 		return nil, fmt.Errorf("failed to get TurnServer: %w", err)
 	}
+	tsEntry := ranked[0]
 
 	// construct QR content
 	qrPayload, _ := json.Marshal(map[string]any{
