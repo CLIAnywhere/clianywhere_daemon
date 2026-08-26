@@ -187,6 +187,19 @@ func (pm *PTYManager) Get(id string) *Session {
 	return pm.sessions[id]
 }
 
+// ResizeIfNeeded resize only when the requested size differs from the current
+// one. Returns true when a real resize was performed — callers on Windows may
+// need to wait briefly afterwards, because a ConPTY resize emits a full-screen
+// repaint that should not be delivered to a freshly attached client.
+func (pm *PTYManager) ResizeIfNeeded(id string, cols, rows int) bool {
+	s := pm.Get(id)
+	if s == nil || (s.Cols == cols && s.Rows == rows) {
+		return false
+	}
+	pm.Resize(id, cols, rows)
+	return true
+}
+
 // Write write data to PTY
 func (pm *PTYManager) Write(id string, data []byte) {
 	pm.mu.Lock()

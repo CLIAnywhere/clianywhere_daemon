@@ -297,6 +297,21 @@ func (ls *LocalServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 
+			// Resize the PTY to the client's size BEFORE registering this
+			// connection as a controller. On Windows a real resize makes
+			// ConPTY emit a full-screen repaint; broadcasting that to a
+			// freshly attached client would append a second copy of the
+			// screen after the history replay. Resizing first (and briefly
+			// waiting for the repaint to be absorbed into the session
+			// History) means the repaint is only seen by already-attached
+			// clients, and the history pushed below is re-serialized at the
+			// client's size. No size (CLI attach / legacy clients) keeps the
+			// previous GetHistory behavior.
+			hasClientSize := msg.Cols > 0 && msg.Rows > 0
+			if hasClientSize && ls.daemon.ptyMgr.ResizeIfNeeded(sessionID, msg.Cols, msg.Rows) {
+				time.Sleep(200 * time.Millisecond)
+			}
+
 			// create per-session wrapper — uses broadcastCh for writes
 			wrapper := &LocalWSConn{ls: ls, conn: conn, sessionID: sessionID}
 			controllerKey := clientID + ":" + sessionID
@@ -327,8 +342,13 @@ func (ls *LocalServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// send attach_ok followed by history data
 			ls.send(conn, Message{Type: TypeAttachOK, SessionID: sessionID})
 
-			// read and send history
-			history, _ := ls.daemon.ptyMgr.GetHistory(sessionID)
+			// read and send history (re-serialized at the client size when known)
+			var history []byte
+			if hasClientSize {
+				history, _ = ls.daemon.ptyMgr.GetHistoryAt(sessionID, msg.Cols, msg.Rows)
+			} else {
+				history, _ = ls.daemon.ptyMgr.GetHistory(sessionID)
+			}
 			if len(history) > 0 {
 				ls.send(conn, Message{
 					Type:      TypeHistoryData,
