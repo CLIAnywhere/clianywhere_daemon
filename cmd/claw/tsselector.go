@@ -377,19 +377,28 @@ func RankTurnServers(logger Logger) ([]TurnServerEntry, int, error) {
 	}
 
 	// 3. flatten all regions and dedupe by Addr
-	// (the same machine may be listed under multiple region keys)
+	// (the same machine may be listed under multiple region keys).
+	// Go map iteration order is random, so the first key visited wins the
+	// entry; when a later duplicate is found under our own region key, flip
+	// the existing entry's local flag to true instead of skipping it.
 	type flatEntry struct {
 		ServerEntry
 		local bool
 	}
-	seen := make(map[string]bool)
+	seen := make(map[string]int) // addr -> index in flat
 	var flat []flatEntry
 	for region, servers := range all {
 		for _, s := range servers {
-			if s.Addr == "" || seen[s.Addr] {
+			if s.Addr == "" {
 				continue
 			}
-			seen[s.Addr] = true
+			if idx, ok := seen[s.Addr]; ok {
+				if region == regionKey {
+					flat[idx].local = true
+				}
+				continue
+			}
+			seen[s.Addr] = len(flat)
 			flat = append(flat, flatEntry{ServerEntry: s, local: region == regionKey})
 		}
 	}
