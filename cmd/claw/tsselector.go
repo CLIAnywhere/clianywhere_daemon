@@ -21,9 +21,9 @@ const (
 	serversCacheFile = "servers.json"
 
 	// probeTimeout shared deadline for the concurrent /health probe round:
-	// all servers are probed in parallel with one 2s budget, so the whole
-	// ranking phase is bounded by ~2s regardless of server count.
-	probeTimeout = 2 * time.Second
+	// all servers are probed in parallel with one 3s budget, so the whole
+	// ranking phase is bounded by ~3s regardless of server count.
+	probeTimeout = 3 * time.Second
 
 	// location cache: ~/.clianywhere/location.cache, format "num|unix_seconds"
 	locationCacheFile = "location.cache"
@@ -406,7 +406,7 @@ func RankTurnServers(logger Logger) ([]TurnServerEntry, int, error) {
 		return nil, 0, fmt.Errorf("servers.json has no servers at all")
 	}
 
-	// 4. probe /health concurrently under one shared 2s budget
+	// 4. probe /health concurrently under one shared 3s budget
 	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
 	defer cancel()
 	healths := make([]float64, len(flat))
