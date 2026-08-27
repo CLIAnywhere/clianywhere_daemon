@@ -512,6 +512,9 @@ func (ls *LocalServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			} else {
 				atomic.StoreInt32(&ls.daemon.secCodeEnabled, 1)
 				atomic.StoreInt32(&ls.daemon.secCodeVerified, 0)
+				// Push the new state to the TS relay so connected browsers get an
+				// updated sec_status (the login snapshot is now stale).
+				ls.daemon.PushSecStatusUpdate()
 				ls.send(conn, Message{Type: TypeSetSecCodeResult, Success: true})
 			}
 
@@ -520,6 +523,9 @@ func (ls *LocalServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				ls.send(conn, Message{Type: TypeUnsetSecCodeResult, Error: err.Error(), Success: false})
 			} else {
 				atomic.StoreInt32(&ls.daemon.secCodeEnabled, 0)
+				// Same push on clear — otherwise the TS keeps reporting
+				// sec_code_enabled=true and the app prompts on a no-code daemon.
+				ls.daemon.PushSecStatusUpdate()
 				ls.send(conn, Message{Type: TypeUnsetSecCodeResult, Success: true})
 			}
 

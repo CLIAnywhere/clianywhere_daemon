@@ -23,6 +23,38 @@ import (
 
 const secureHandshakeTimeout = 10 * time.Second
 
+// secStatusUpdateMsg daemon→TS control message: the security-code state changed
+// after login. Marshaled from a struct so "type" stays the first key — the TS
+// intercepts it by prefix in its read loop instead of relaying it to the app.
+type secStatusUpdateMsg struct {
+	Type           string `json:"type"`
+	SecCodeEnabled bool   `json:"sec_code_enabled"`
+	SecureCap      bool   `json:"secure_cap"`
+}
+
+// PushSecStatusUpdate tells the TS relay the security-code state changed
+// (set/unset via the local web UI). The TS keeps a login-time snapshot; without
+// this push it would keep telling browsers sec_code_enabled=true after the code
+// is cleared, making the app prompt for a code on a no-code daemon.
+func (d *Daemon) PushSecStatusUpdate() {
+	d.wsMu.RLock()
+	relay := d.wsRelay
+	d.wsMu.RUnlock()
+	if relay == nil {
+		return
+	}
+	payload, err := json.Marshal(secStatusUpdateMsg{
+		Type:           "sec_status_update",
+		SecCodeEnabled: atomic.LoadInt32(&d.secCodeEnabled) == 1,
+		SecureCap:      true,
+	})
+	if err != nil {
+		return
+	}
+	relay.SendRaw(payload)
+	d.logger.Infof("[secure] pushed sec_status_update (sec_code_enabled=%v)", atomic.LoadInt32(&d.secCodeEnabled) == 1)
+}
+
 // handlePakeStart is the client's first handshake message: {sid, pa}.
 // Forced encryption: EVERY connection must complete a SPAKE2 handshake. If the
 // daemon has no real security code, the public default (000000) is used as the
