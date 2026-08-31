@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 var _daemonized = false
@@ -30,6 +31,10 @@ func forkToBackground() int {
 
 	cmd := exec.Command(os.Args[0], os.Args[1:]...)
 	cmd.Env = append(os.Environ(), "CLIANYWHERE_DAEMONIZED=1")
+	// Detach from the terminal session: closing the terminal sends SIGHUP to
+	// the foreground process group; without setsid the daemon child stays in
+	// it and dies together with the CLI menu process.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	cmd.ExtraFiles = []*os.File{w} // fd 3 in child
 	// redirect child stdout/stderr to log file
 	if logF, logErr := openDaemonLogFile(); logErr == nil {
