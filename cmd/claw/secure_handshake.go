@@ -230,13 +230,6 @@ func (d *Daemon) wrapOutgoingJSON(msg *Message) *Message {
 		d.logger.Errorf("[secure] DROP %s: wrap failed: %v", msg.Type, err)
 		return nil
 	}
-	// Diagnostic: trace secure-wrapped dir_list chunks through the send path
-	// (paired with the [dirlist] logs in filetransfer.go).
-	if msg.Type == TypeDirList {
-		if b, err := json.Marshal(msg); err == nil {
-			d.logger.Infof("[secure] wrapped dir_list: marshaled=%d bytes", len(b))
-		}
-	}
 	return wrapped
 }
 

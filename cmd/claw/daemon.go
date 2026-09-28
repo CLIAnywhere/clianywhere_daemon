@@ -1210,9 +1210,17 @@ func (d *Daemon) handleChannelSelect(msg *Message) {
 		d.resetSecure("channel_switch_p2p")
 	}
 
+	d.channelMu.RLock()
+	prev := d.channelMode
+	d.channelMu.RUnlock()
+
 	d.channelMu.Lock()
 	d.channelMode = channel
 	d.channelMu.Unlock()
+
+	if prev != channel {
+		d.logger.Infof("[P2P] channel_select=%s (prev=%q)", channel, prev)
+	}
 
 	d.sendJSON(&Message{
 		Type: TypeChannelSelected,
@@ -1236,9 +1244,11 @@ func (d *Daemon) handleChannelSelect(msg *Message) {
 
 // handleFileSendCancel handle frontend request to cancel file send
 func (d *Daemon) handleFileSendCancel(msg *Message) {
-	if d.fileTransfer != nil && msg.FileID > 0 {
-		d.fileTransfer.Cancel(msg.FileID)
+	if d.fileTransfer == nil || msg.FileID <= 0 {
+		return
 	}
+
+	d.fileTransfer.Cancel(msg.FileID)
 }
 
 // handleFileRequest handle frontend request to transfer a file

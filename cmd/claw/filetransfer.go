@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
@@ -524,16 +523,19 @@ func (ftm *FileTransferManager) handleIPCUpload(w http.ResponseWriter, r *http.R
 
 // HandleDirListRequest handle directory list request
 func (ftm *FileTransferManager) HandleDirListRequest(reqPath string) {
-	// Diagnostic: huge-directory listing has crashed the daemon before with no
-	// visible log. Catch any panic here with a stack trace so the cause lands
-	// in daemon.log instead of a silent exit.
+	// A huge-directory listing has crashed the daemon before with no visible
+	// log — keep the recover so the process survives, reporting the error to
+	// the app instead of exiting.
 	defer func() {
 		if r := recover(); r != nil {
-			ftm.logger.Errorf("[dirlist] PANIC path=%q: %v\n%s", reqPath, r, debug.Stack())
+			ftm.daemon.sendJSON(&Message{
+				Type:  TypeDirList,
+				Path:  reqPath,
+				Error: fmt.Sprintf("dirlist panic: %v", r),
+			})
 		}
 	}()
 
-	ftm.logger.Infof("[dirlist] request path=%q", reqPath)
 	targetPath := reqPath
 	if targetPath == "" {
 		// Windows: show all drive letters
@@ -569,7 +571,6 @@ func (ftm *FileTransferManager) HandleDirListRequest(reqPath string) {
 
 	entries, err := os.ReadDir(targetPath)
 	if err != nil {
-		ftm.logger.Errorf("[dirlist] readdir failed path=%q: %v", targetPath, err)
 		ftm.daemon.sendJSON(&Message{
 			Type:  TypeDirList,
 			Path:  toForwardSlash(targetPath),
@@ -577,7 +578,6 @@ func (ftm *FileTransferManager) HandleDirListRequest(reqPath string) {
 		})
 		return
 	}
-	ftm.logger.Infof("[dirlist] readdir ok path=%q entries=%d", targetPath, len(entries))
 
 	var dirs, files []DirEntry
 	for _, e := range entries {
@@ -599,7 +599,6 @@ func (ftm *FileTransferManager) HandleDirListRequest(reqPath string) {
 
 	sort.Slice(dirs, func(i, j int) bool { return dirs[i].Name < dirs[j].Name })
 	sort.Slice(files, func(i, j int) bool { return files[i].Name < files[j].Name })
-	ftm.logger.Infof("[dirlist] built listing path=%q dirs=%d files=%d", targetPath, len(dirs), len(files))
 
 	ftm.sendDirList(toForwardSlash(targetPath), dirs, files)
 }
@@ -702,8 +701,6 @@ func (ftm *FileTransferManager) sendDirList(path string, dirs, files []DirEntry)
 	chunks = append(chunks, span{start, len(sizes)})
 
 	ndirs := len(dirs)
-	ftm.logger.Infof("[dirlist] chunking path=%q totalEntries=%d chunks=%d budget=%d",
-		path, len(sizes), len(chunks), budget)
 	for i, c := range chunks {
 		// map the combined [start,end) range back to dirs/files sub-slices.
 		// dLo must clamp to ndirs too: a chunk starting past the dirs/files
@@ -721,15 +718,6 @@ func (ftm *FileTransferManager) sendDirList(path string, dirs, files []DirEntry)
 				Files: files[fLo:fHi],
 			},
 		}
-		// Diagnostic: log every chunk so daemon.log shows exactly how far the
-		// listing got if the process dies mid-send.
-		chunkBytes := 0
-		for _, s := range sizes[c.start:c.end] {
-			chunkBytes += s
-		}
-		ftm.logger.Infof("[dirlist] send chunk %d/%d dirs=%d files=%d approxBytes=%d",
-			i+1, len(chunks), dHi-dLo, fHi-fLo, chunkBytes)
 		ftm.daemon.sendJSONWithBackpressure(msg, 64*1024)
 	}
-	ftm.logger.Infof("[dirlist] done path=%q chunks=%d", path, len(chunks))
 }
