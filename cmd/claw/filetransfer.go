@@ -20,6 +20,39 @@ import (
 
 const transFilesDir = ".clianywhere/transfiles"
 
+// File-transfer flow control (relay mode only).
+//
+// The relay is a single ordered WS stream with no transport-level way to drop
+// in-flight data: once the daemon has written chunks into the pipe they keep
+// flowing toward the app until consumed. If the app stalls (background freeze,
+// slow decrypt), everything already sent piles up in CF's outbound queue and
+// the app's stream queue — and terminal text queues behind it (head-of-line
+// blocking, the relay twin of the P2P bug in P2P_DATACHANNEL_FIX.md).
+//
+// Fix: a sliding window. The daemon keeps at most fileAckWindow chunks
+// unacknowledged; the app acknowledges every chunk AFTER decrypting it, so the
+// window bounds both the CF backlog and the terminal's worst-case wait to one
+// window of data. The window matches the app's 4-worker decrypt pool: acks
+// fire per decrypted chunk, so fewer in-flight chunks than workers would cap
+// decrypt parallelism and halve throughput. P2P mode skips the window — its
+// SCTP BufferedAmount backpressure already closes the loop.
+const (
+	fileAckWindow  = 4                // max unacknowledged chunks in flight (= app decrypt workers; 4×1MB=4MB)
+	fileAckTimeout = 30 * time.Second // no ack for this long → abort transfer
+)
+
+// fileChunkLimitFor returns the per-chunk frame limit for a file transfer on
+// the daemon's current channel. On relay it additionally caps to FileRelayChunk:
+// relay forwards frames atomically, so chunk size is the granularity of the
+// in-flight data a cancel cannot recall.
+func fileChunkLimitFor(d *Daemon) int {
+	limit := d.frameLimitForChannel()
+	if !d.channelIsP2P() && limit > FileRelayChunk {
+		limit = FileRelayChunk
+	}
+	return limit
+}
+
 // StagedFileEntry internal staged file entry (includes local path)
 type StagedFileEntry struct {
 	Info     StagedFile // protocol struct
@@ -47,6 +80,18 @@ type FileSendTask struct {
 	SentChunks  int
 	StartTime   time.Time
 	cancel      chan struct{}
+
+	// Sliding-window flow control (relay mode): app-confirmed chunk count and
+	// the wakeup signal for the sender parked on the window.
+	acked     atomic.Int32
+	ackNotify chan struct{} // cap 1; non-blocking poke from HandleAck
+
+	// cancelOnce guards cancel against a double close. Cancel() and CancelAll()
+	// can both fire for the same task (per-file cancel from the app, then
+	// CancelAll when P2P drops / browser goes offline), and close() on an
+	// already-closed channel panics — which takes the whole daemon down with it,
+	// not just the transfer.
+	cancelOnce sync.Once
 }
 
 // NewFileTransferManager create file transfer manager
@@ -215,13 +260,21 @@ func (ftm *FileTransferManager) startSendFromStaged(filePath string) error {
 
 	fileSize := info.Size()
 	fileName := filepath.Base(filePath)
+	// Pick the limit for the current channel: TS relay additionally tightens
+	// to FileRelayChunk (1MB — the relay forwards whole frames atomically, so
+	// the chunk size is the granularity of what a cancel can no longer recall);
+	// the P2P DataChannel only fits 64KB (pion rejects larger with
+	// ErrOutboundPacketTooLarge). The chunk size is fixed for the whole
+	// transfer and the app reassembles by chunkIdx, so no size negotiation
+	// between the ends is required.
+	frameLimit := fileChunkLimitFor(ftm.daemon)
 	chunkSize := ftm.daemon.cfg.ChunkSize
 	secureOverhead := 0
 	if ftm.daemon.secureActive() {
 		secureOverhead = SecureBinaryOverhead // encrypted binary envelope
 	}
-	if chunkSize <= 0 || chunkSize > MaxFrameSize-9-secureOverhead {
-		chunkSize = MaxFrameSize - 9 - secureOverhead // 9-byte file transfer header
+	if chunkSize <= 0 || chunkSize > frameLimit-9-secureOverhead {
+		chunkSize = frameLimit - 9 - secureOverhead // 9-byte file transfer header
 	}
 	totalChunks := int((fileSize + int64(chunkSize) - 1) / int64(chunkSize))
 	if totalChunks == 0 {
@@ -237,6 +290,7 @@ func (ftm *FileTransferManager) startSendFromStaged(filePath string) error {
 		TotalChunks: totalChunks,
 		StartTime:   time.Now(),
 		cancel:      make(chan struct{}),
+		ackNotify:   make(chan struct{}, 1),
 	}
 
 	ftm.mu.Lock()
@@ -259,6 +313,51 @@ func (ftm *FileTransferManager) startSendFromStaged(filePath string) error {
 // StartSend compat with old interface (IPC send command changed to stage)
 func (ftm *FileTransferManager) StartSend(filePath string) error {
 	return ftm.StageFile(filePath)
+}
+
+// ackWaitResult is why an awaitAckWindow wait ended.
+type ackWaitResult int
+
+const (
+	ackWaitReady ackWaitResult = iota
+	ackWaitCancelled
+	ackWaitTimeout
+)
+
+// awaitAckWindow blocks until the app has acknowledged enough chunks for
+// chunkIdx to proceed inside the sliding window (acked + window > chunkIdx),
+// the task is cancelled, or no ack arrives within fileAckTimeout (app stalled
+// — freeze, network black hole). Pure wait, no side effects.
+func (ftm *FileTransferManager) awaitAckWindow(task *FileSendTask, chunkIdx int) ackWaitResult {
+	for task.acked.Load()+int32(fileAckWindow) <= int32(chunkIdx) {
+		select {
+		case <-task.cancel:
+			return ackWaitCancelled
+		case <-task.ackNotify:
+			// re-check acked in the loop condition
+		case <-time.After(fileAckTimeout):
+			return ackWaitTimeout
+		}
+	}
+	return ackWaitReady
+}
+
+// HandleAck records the app's flow-control ack (chunks consumed and decrypted
+// so far) and wakes a sender parked on the window.
+func (ftm *FileTransferManager) HandleAck(fileID uint32, received int) {
+	ftm.mu.Lock()
+	task, ok := ftm.active[fileID]
+	ftm.mu.Unlock()
+	if !ok {
+		return
+	}
+	if int32(received) > task.acked.Load() {
+		task.acked.Store(int32(received))
+		select {
+		case task.ackNotify <- struct{}{}:
+		default:
+		}
+	}
 }
 
 // sendFile background read file and send binary chunks
@@ -284,7 +383,29 @@ func (ftm *FileTransferManager) sendFile(task *FileSendTask, chunkSize int) {
 	buf := make([]byte, chunkSize)
 	header := make([]byte, 9)
 
+	// The sliding window is relay-mode only: the relay has no transport-level
+	// way to drop in-flight data, so acks are the only way to bound it; on P2P
+	// the SCTP BufferedAmount backpressure already closes the loop.
+	useWindow := !ftm.daemon.channelIsP2P()
+
 	for chunkIdx := 0; chunkIdx < task.TotalChunks; chunkIdx++ {
+		if useWindow {
+			switch ftm.awaitAckWindow(task, chunkIdx) {
+			case ackWaitCancelled:
+				ftm.daemon.sendJSON(&Message{
+					Type:   TypeFileSendCancel,
+					FileID: task.ID,
+				})
+				return
+			case ackWaitTimeout:
+				ftm.daemon.sendJSON(&Message{
+					Type:   TypeFileSendError,
+					FileID: task.ID,
+					Error:  "ack timeout (app stalled)",
+				})
+				return
+			}
+		}
 		select {
 		case <-task.cancel:
 			ftm.daemon.sendJSON(&Message{
@@ -318,8 +439,6 @@ func (ftm *FileTransferManager) sendFile(task *FileSendTask, chunkSize int) {
 		copy(frame[0:9], header)
 		copy(frame[9:], buf[:n])
 
-		if len(frame) > 31*1024 {
-		}
 		sent := ftm.daemon.sendBytesCancelable(frame, 256*1024, task.cancel)
 		if !sent {
 			return
@@ -342,25 +461,33 @@ func (ftm *FileTransferManager) sendFile(task *FileSendTask, chunkSize int) {
 }
 
 // Cancel cancel sending of specific file
+// Cancel aborts one in-flight send and removes it from the active map.
+//
+// Removing it matters: leaving the task behind meant a later CancelAll (P2P drop,
+// browser offline, channel switch) would close the same channel again and panic.
 func (ftm *FileTransferManager) Cancel(fileID uint32) {
 	ftm.mu.Lock()
 	task, ok := ftm.active[fileID]
+	if ok {
+		delete(ftm.active, fileID)
+	}
 	ftm.mu.Unlock()
 
 	if ok {
-		close(task.cancel)
+		task.cancelOnce.Do(func() { close(task.cancel) })
 	}
 }
 
-// CancelAll cancel all file sends
+// CancelAll aborts every in-flight send.
 func (ftm *FileTransferManager) CancelAll() {
 	ftm.mu.Lock()
-	defer ftm.mu.Unlock()
-
-	for _, task := range ftm.active {
-		close(task.cancel)
-	}
+	tasks := ftm.active
 	ftm.active = make(map[uint32]*FileSendTask)
+	ftm.mu.Unlock()
+
+	for _, task := range tasks {
+		task.cancelOnce.Do(func() { close(task.cancel) })
+	}
 }
 
 // handleIPCUpload handle HTTP IPC file send request (daemon send command)

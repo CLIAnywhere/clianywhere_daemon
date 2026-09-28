@@ -43,6 +43,15 @@ const (
 	// ProxyRelayChunk is the max raw payload per proxy frame on the TS relay
 	// channel (512KB).
 	ProxyRelayChunk = 512 * 1024
+
+	// FileRelayChunk caps a single file-transfer chunk on the TS relay channel.
+	// The relay forwards whole WebSocket messages atomically (store-and-forward
+	// per frame), so a chunk already in flight cannot be recalled on cancel —
+	// chunk size is the granularity of that unrecoverable remainder. 1MB keeps
+	// the per-frame overhead (9B header + E2E envelope + dispatch) at noise
+	// while making the sliding window 4x finer than the raw 4MB relay ceiling.
+	// P2P is unaffected (it uses P2PMaxMessageSize).
+	FileRelayChunk = 1024 * 1024
 )
 
 // MaxSecCodeAttempts is the maximum number of consecutive failed security-code
@@ -158,6 +167,7 @@ const (
 	TypeFileList        = "file_list"         // Daemon→App: staged file list
 	TypeFileListRequest = "file_list_request" // App->Daemon: request staged file list
 	TypeFileRequest     = "file_request"      // App→Daemon: request file transfer
+	TypeFileAck         = "file_ack"          // App→Daemon: flow control, chunks consumed so far
 	TypeFileDelete      = "file_delete"       // App
 
 	// Remote file browsing
@@ -278,6 +288,7 @@ type Message struct {
 	OriginalName    string       `json:"original_name,omitempty"`
 	FileTime        string       `json:"file_time,omitempty"`
 	Files           []StagedFile `json:"files,omitempty"`
+	Received        int          `json:"received,omitempty"` // file_ack: chunks the app has consumed (flow control)
 	Path            string       `json:"path,omitempty"`
 	Entries         *DirEntries  `json:"entries,omitempty"`
 	Name            string       `json:"name,omitempty"`

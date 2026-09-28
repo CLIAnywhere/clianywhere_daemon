@@ -844,6 +844,13 @@ func (d *Daemon) handleMessage(msg *Message, source string) {
 			return
 		}
 		d.handleFileRequest(msg)
+	case TypeFileAck:
+		// Sliding-window flow control: chunks the app has consumed (decrypted).
+		// Not security-sensitive, so no secCode gate — a sender parked on the
+		// window must not deadlock on a mid-handshake state.
+		if d.fileTransfer != nil {
+			d.fileTransfer.HandleAck(msg.FileID, msg.Received)
+		}
 	case TypeFileListRequest:
 		if !d.checkSecCode() {
 			return
