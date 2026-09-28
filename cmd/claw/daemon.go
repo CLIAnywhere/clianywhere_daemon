@@ -313,6 +313,7 @@ func (d *Daemon) startP2PAsAnswerer(sdpOffer string, earlyICE []map[string]any) 
 
 	// waiting for connection to establish (10s timeout)
 	if err := rtc.WaitConnected(10 * time.Second); err != nil {
+		d.logger.Errorf("[P2P] establish failed: %v", err)
 		rtc.Close()
 		d.rtcMu.Lock()
 		if d.rtc == rtc {
@@ -323,7 +324,10 @@ func (d *Daemon) startP2PAsAnswerer(sdpOffer string, earlyICE []map[string]any) 
 	}
 
 	// block until P2P disconnects
-	rtc.WaitDisconnected()
+	if err := rtc.WaitDisconnected(); err != nil {
+		d.logger.Warnf("[P2P] disconnected: %v", err)
+	}
+	d.logger.Infof("[P2P] disconnected, channel cleanup starting")
 
 	// P2P disconnected
 	d.rtcMu.Lock()
@@ -1475,6 +1479,11 @@ func (d *Daemon) sendJSONWithBackpressure(msg *Message, threshold uint64) {
 // sendBytes send binary data via current selected channel
 func (d *Daemon) sendBytes(data []byte) {
 	data = d.wrapOutgoingBinary(data)
+	if len(data) == 0 {
+		// Wrap failed (E2E not established / serialization error):
+		// the whole binary frame is dropped.
+		return
+	}
 	d.channelMu.RLock()
 	mode := d.channelMode
 	d.channelMu.RUnlock()
@@ -1583,6 +1592,9 @@ func (d *Daemon) proxyPayloadLimitForChannel() int {
 // sendBytesCancelable blocking send with cancel (for file transfer, returns immediately when cancel is closed)
 func (d *Daemon) sendBytesCancelable(data []byte, threshold uint64, cancel <-chan struct{}) bool {
 	data = d.wrapOutgoingBinary(data)
+	if len(data) == 0 {
+		return false
+	}
 	d.channelMu.RLock()
 	mode := d.channelMode
 	d.channelMu.RUnlock()
@@ -1594,22 +1606,7 @@ func (d *Daemon) sendBytesCancelable(data []byte, threshold uint64, cancel <-cha
 		rtcOK := rtc != nil && rtc.Connected()
 		d.rtcMu.RUnlock()
 		if rtcOK {
-			for {
-				select {
-				case <-cancel:
-					return false
-				default:
-				}
-				rtc.mu.Lock()
-				ba := rtc.dc.BufferedAmount()
-				rtc.mu.Unlock()
-				if ba < threshold {
-					break
-				}
-				time.Sleep(5 * time.Millisecond)
-			}
-			rtc.SendBytes(data)
-			return true
+			return rtc.SendBytesCancelable(data, threshold, cancel)
 		}
 		return false
 

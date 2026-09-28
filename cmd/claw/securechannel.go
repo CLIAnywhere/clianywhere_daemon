@@ -12,8 +12,8 @@ package main
 // Text messages are wrapped as an outer envelope whose `type` is one of
 // enc_term / enc_file / enc_proxy, so the relay can still apply its rate-limit
 // and free-plan policy without ever seeing the plaintext. Binary frames get a
-// [0x07][8B seq][ciphertext] prefix and stay binary frames, so the relay's
-// free-plan binary handling is unchanged.
+// [0x07][8B seq][1B innerOpcode][ciphertext] prefix and stay binary frames,
+// so the relay's free-plan binary handling is unchanged.
 
 import (
 	"crypto/aes"
@@ -178,7 +178,11 @@ func (c *SecureChannel) UnwrapJSON(outer *Message) (*Message, error) {
 	return &inner, nil
 }
 
-// WrapBinary encrypts a raw binary frame and returns [0x07][8B seq][ciphertext].
+// WrapBinary encrypts a raw binary frame and returns
+// [0x07][8B seq][1B innerOpcode][ciphertext]. The innerOpcode mirrors
+// frame[0] in the clear so the P2P layer can route bulk frames onto the
+// dedicated file DataChannel without decrypting; the decrypted plaintext
+// still carries the authoritative opcode byte.
 func (c *SecureChannel) WrapBinary(frame []byte) []byte {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -188,10 +192,13 @@ func (c *SecureChannel) WrapBinary(frame []byte) []byte {
 	seq := c.sendSeq
 	c.sendSeq++
 	ct := c.gcmSend.Seal(nil, makeNonce(c.sendDir, seq), frame, nil)
-	out := make([]byte, 1+8+len(ct))
+	out := make([]byte, 1+8+1+len(ct))
 	out[0] = OpcodeSecureBinary
 	binary.BigEndian.PutUint64(out[1:9], seq)
-	copy(out[9:], ct)
+	if len(frame) > 0 {
+		out[9] = frame[0]
+	}
+	copy(out[10:], ct)
 	return out
 }
 
@@ -203,14 +210,15 @@ func (c *SecureChannel) UnwrapBinary(frame []byte) ([]byte, error) {
 	if !c.active || c.gcmRecv == nil {
 		return nil, errSecureInactive
 	}
-	if len(frame) < 10 || frame[0] != OpcodeSecureBinary {
+	if len(frame) < 11 || frame[0] != OpcodeSecureBinary {
 		return nil, errSecureDecrypt
 	}
 	seq := binary.BigEndian.Uint64(frame[1:9])
 	if c.hasRecv && seq <= c.recvSeq {
 		return nil, errSecureReplay
 	}
-	plain, err := c.gcmRecv.Open(nil, makeNonce(c.recvDir, seq), frame[9:], nil)
+	// byte 9 is the routing-mirror innerOpcode; skip it, not part of the ciphertext
+	plain, err := c.gcmRecv.Open(nil, makeNonce(c.recvDir, seq), frame[10:], nil)
 	if err != nil {
 		return nil, errSecureDecrypt
 	}

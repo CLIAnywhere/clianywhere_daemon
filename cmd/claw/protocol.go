@@ -74,8 +74,8 @@ const (
 	SecureMaxTextPayload = 24000
 
 	// SecureBinaryOverhead is added to every binary frame when encryption is
-	// active: 1B opcode + 8B seq + 16B GCM tag.
-	SecureBinaryOverhead = 25
+	// active: 1B opcode + 8B seq + 1B innerOpcode + 16B GCM tag.
+	SecureBinaryOverhead = 26
 )
 
 // Binary frame Opcodes (first byte)
@@ -89,10 +89,24 @@ const (
 	proxyFrameHeaderSize = 5
 
 	// OpcodeSecureBinary wraps an encrypted frame when the secure channel is
-	// active: [0x07][8B seq BE][AES-GCM ciphertext of the original frame
-	// including its own opcode byte]. Stays a binary frame so the relay's
-	// free-plan binary policy is preserved.
+	// active: [0x07][8B seq BE][1B innerOpcode][AES-GCM ciphertext of the
+	// original frame including its own opcode byte]. Stays a binary frame so
+	// the relay's free-plan binary policy is preserved.
+	//
+	// The innerOpcode byte mirrors the first byte of the encrypted payload in
+	// the clear: the P2P layer routes bulk frames (OpcodeFileTransfer) onto a
+	// dedicated "file" DataChannel and needs to know the opcode without
+	// decrypting — see P2P_DATACHANNEL_FIX.md. It is routing metadata only;
+	// the authoritative opcode is the first byte of the decrypted plaintext.
 	OpcodeSecureBinary = 0x07
+
+	// DataChannel labels. The app (offerer) creates both channels up front; the
+	// daemon (answerer) dispatches incoming channels by label. "file" is the
+	// independent SCTP stream for bulk binary — cancelling a transfer closes
+	// it (stream reset discards the queued chunks) without ever blocking the
+	// "terminal" stream (head-of-line blocking fix).
+	dcLabelTerminal = "terminal"
+	dcLabelFile     = "file"
 )
 
 // Fatal error flag — TS attaches this field to any "permanent, non-retryable"
