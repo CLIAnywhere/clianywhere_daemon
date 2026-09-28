@@ -15,7 +15,7 @@ type Config struct {
 	DefaultRows     int
 	HistoryLines    int    // VT100 scrollback max lines
 	ForceTS         bool   // disable P2P, force TS relay
-	ForceTSAddr     string // skip TS selection, directly use this TS addr (full WebSocket URL)
+	ForceTSAddr     string // override the fixed relay addr (debug only; see tsselector.go)
 
 	// file transfer
 	IPCHTTPPort int // HTTP IPC port (for daemon send), default 19876

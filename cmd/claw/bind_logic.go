@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"regexp"
 	"runtime"
@@ -38,24 +39,21 @@ func GenerateBindCode(cfg *Config) (*BindCodeResult, error) {
 	hostname, _ := os.Hostname()
 	deviceInfo := fmt.Sprintf("%s|%s", hostname, runtime.GOOS)
 
-	// get TurnServer (best-ranked server of the local region)
-	ranked, _, err := RankTurnServers(nil)
-	if err != nil || len(ranked) == 0 {
-		return nil, fmt.Errorf("failed to get TurnServer: %w", err)
-	}
-	tsEntry := ranked[0]
+	// The relay address is fixed; the QR code embeds it directly. This is the
+	// address the app ends up using after scanning.
+	tsAddr := ResolveTSAddr()
 
 	// construct QR content
 	qrPayload, _ := json.Marshal(map[string]any{
 		"b": bindcode,
-		"a": tsEntry.Addr,
+		"a": tsAddr,
 		"d": deviceInfo,
 	})
 
 	return &BindCodeResult{
 		BindCode:   bindcode,
 		QRPayload:  qrPayload,
-		TSWSURL:    tsEntry.WSURL(),
+		TSWSURL:    tsAddr,
 		DeviceInfo: deviceInfo,
 	}, nil
 }
@@ -80,7 +78,12 @@ func ConnectAndSendBindCode(wsURL, bindcode string) (*websocket.Conn, error) {
 	header.Set("User-Agent", "CliAnyWhere/daemon")
 	header.Set("Cookie", "fromapp=clianywhere")
 
-	conn, _, err := dialer.Dial(wsURL+"?role=daemon", header)
+	// bc= routes this connection to the relay's idFromName("bc:"+bindcode)
+	// instance — the QR flow has no accesskey yet, so k= is unavailable. The
+	// daemon side takes no part in accesskey pairing: after registering the
+	// bindcode this connection just stays alive until the browser's dobindcode
+	// arrives via RPC.
+	conn, _, err := dialer.Dial(wsURL+"?role=daemon&bc="+neturl.QueryEscape(bindcode), header)
 	if err != nil {
 		return nil, fmt.Errorf("WebSocket connect failed: %w", err)
 	}

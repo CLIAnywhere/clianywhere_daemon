@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	neturl "net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -94,7 +95,12 @@ func (w *WSTurnRelay) Connect(url string) error {
 	header := http.Header{}
 	header.Set("User-Agent", "CliAnyWhere/daemon")
 	header.Set("Cookie", "fromapp=clianywhere")
-	conn, _, err := dialer.Dial(url+"?role=daemon", header)
+
+	// k= makes the relay route to the idFromName(accesskey) DO instance right
+	// at upgrade time. role= only decides whether this connection registers as
+	// daemon or browser inside the DO. Without k the relay cannot pick a
+	// routing target before authentication, so pairing would always fail.
+	conn, _, err := dialer.Dial(url+"?role=daemon&k="+neturl.QueryEscape(w.accessKey), header)
 	if err != nil {
 		return fmt.Errorf("WebSocket connection failed: %w", err)
 	}
