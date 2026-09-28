@@ -108,8 +108,8 @@ func TestSecureHandshakeFullFlow(t *testing.T) {
 
 	// 2. sec_confirm
 	d.handleMessage(&Message{
-		Type:  TypeSecConfirm,
-		TagA:  base64.StdEncoding.EncodeToString(TagA(keys, client.Transcript())),
+		Type: TypeSecConfirm,
+		TagA: base64.StdEncoding.EncodeToString(TagA(keys, client.Transcript())),
 	}, "TS")
 
 	okMsg := nextMsg(t, ch)

@@ -18,7 +18,7 @@ type windowsPty struct {
 func (p *windowsPty) Read(b []byte) (int, error)  { return p.c.Read(b) }
 func (p *windowsPty) Write(b []byte) (int, error) { return p.c.Write(b) }
 func (p *windowsPty) Close() error                { return p.c.Close() }
-func (p *windowsPty) Resize(cols, rows int) error  { return p.c.Resize(cols, rows) }
+func (p *windowsPty) Resize(cols, rows int) error { return p.c.Resize(cols, rows) }
 func (p *windowsPty) Wait() error {
 	_, err := p.c.Wait(context.Background())
 	return err

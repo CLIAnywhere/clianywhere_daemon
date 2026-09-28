@@ -6,7 +6,7 @@ package main
 var consoleAllocated bool
 
 // ensureConsole/releaseConsole no-op on Unix
-func ensureConsole() {}
-func releaseConsole() {}
-func setConsoleUTF8() {}
+func ensureConsole()        {}
+func releaseConsole()       {}
+func setConsoleUTF8()       {}
 func disableQuickEditMode() {}

@@ -22,18 +22,18 @@ const transFilesDir = ".clianywhere/transfiles"
 
 // StagedFileEntry internal staged file entry (includes local path)
 type StagedFileEntry struct {
-	Info       StagedFile // protocol struct
-	FilePath   string     // ~/.clianywhere/transfiles/ full path under
+	Info     StagedFile // protocol struct
+	FilePath string     // ~/.clianywhere/transfiles/ full path under
 }
 
 // FileTransferManager manage file staging list and send tasks
 type FileTransferManager struct {
-	mu     sync.Mutex
-	active map[uint32]*FileSendTask // active transfer tasks
-	staged []StagedFileEntry       // staged file list
-	daemon *Daemon
-	logger Logger
-	nextID uint32
+	mu        sync.Mutex
+	active    map[uint32]*FileSendTask // active transfer tasks
+	staged    []StagedFileEntry        // staged file list
+	daemon    *Daemon
+	logger    Logger
+	nextID    uint32
 	stagedDir string // ~/.clianywhere/transfiles
 }
 
@@ -52,10 +52,10 @@ type FileSendTask struct {
 // NewFileTransferManager create file transfer manager
 func NewFileTransferManager(d *Daemon, logger Logger) *FileTransferManager {
 	ftm := &FileTransferManager{
-		daemon:    d,
-		logger:   logger,
-		active:   make(map[uint32]*FileSendTask),
-		staged:   make([]StagedFileEntry, 0),
+		daemon: d,
+		logger: logger,
+		active: make(map[uint32]*FileSendTask),
+		staged: make([]StagedFileEntry, 0),
 	}
 
 	// initialize staging directory, clear old files
@@ -133,7 +133,6 @@ func (ftm *FileTransferManager) StageFile(srcPath string) error {
 	ftm.staged = append(ftm.staged, entry)
 	ftm.mu.Unlock()
 
-
 	// notify frontend file list
 	ftm.sendFileList()
 
@@ -170,7 +169,6 @@ func (ftm *FileTransferManager) HandleRequest(fileID uint32) error {
 		return fmt.Errorf("file does not exist (id=%d)", fileID)
 	}
 	ftm.mu.Unlock()
-
 
 	// use original send logic
 	if err := ftm.startSendFromStaged(entry.FilePath); err != nil {
@@ -244,7 +242,6 @@ func (ftm *FileTransferManager) startSendFromStaged(filePath string) error {
 	ftm.mu.Lock()
 	ftm.active[fileID] = task
 	ftm.mu.Unlock()
-
 
 	ftm.daemon.sendJSON(&Message{
 		Type:        TypeFileSendBegin,

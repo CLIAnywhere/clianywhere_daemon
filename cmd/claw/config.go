@@ -13,8 +13,8 @@ type Config struct {
 	DefaultShell    string
 	DefaultCols     int
 	DefaultRows     int
-	HistoryLines    int // VT100 scrollback max lines
-	ForceTS         bool // disable P2P, force TS relay
+	HistoryLines    int    // VT100 scrollback max lines
+	ForceTS         bool   // disable P2P, force TS relay
 	ForceTSAddr     string // skip TS selection, directly use this TS addr (full WebSocket URL)
 
 	// file transfer
@@ -25,7 +25,7 @@ type Config struct {
 // DefaultConfig default configuration
 func DefaultConfig() *Config {
 	return &Config{
-		ForceTS:     os.Getenv("CLIANYWHERE_NOP2P") == "1",
+		ForceTS:         os.Getenv("CLIANYWHERE_NOP2P") == "1",
 		GlobalServerURL: "https://globalserver.clianywhere.com",
 		PollInterval:    3 * time.Second,
 		PoolSize:        1,

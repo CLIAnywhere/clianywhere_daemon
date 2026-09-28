@@ -22,7 +22,9 @@ func shellCmdExe() string  { return buildStr([]byte{99, 109, 100, 46, 101, 120, 
 func shellPwsh() string    { return buildStr([]byte{112, 119, 115, 104}) }              // pw sh
 func shellPwshExe() string { return buildStr([]byte{112, 119, 115, 104, 46, 101, 120, 101}) }
 func shellPs() string      { return buildStr([]byte{112, 111, 119, 101, 114, 115, 104, 101, 108, 108}) }
-func shellPsExe() string   { return buildStr([]byte{112, 111, 119, 101, 114, 115, 104, 101, 108, 108, 46, 101, 120, 101}) }
+func shellPsExe() string {
+	return buildStr([]byte{112, 111, 119, 101, 114, 115, 104, 101, 108, 108, 46, 101, 120, 101})
+}
 func defaultShellName() string { return shellCmd() }
 
 func ResolveShell(shell string) string {

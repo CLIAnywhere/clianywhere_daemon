@@ -35,20 +35,20 @@ const (
 )
 
 var (
-	modkernel32    = syscall.NewLazyDLL("kernel32.dll")
-	moduser32      = syscall.NewLazyDLL("user32.dll")
-	pGetModuleW    = modkernel32.NewProc("GetModuleHandleW")
-	pCreateWinExW  = moduser32.NewProc("CreateWindowExW")
-	pDefWndProcW   = moduser32.NewProc("DefWindowProcW")
-	pPostQuitMsg   = moduser32.NewProc("PostQuitMessage")
-	pLoadImageW    = moduser32.NewProc("LoadImageW")
-	pSendMessageW  = moduser32.NewProc("SendMessageW")
-	pGetMessageW   = moduser32.NewProc("GetMessageW")
-	pTranslateMsg  = moduser32.NewProc("TranslateMessage")
-	pDispatchMsgW  = moduser32.NewProc("DispatchMessageW")
-	pSetWindowText = moduser32.NewProc("SetWindowTextW")
-	pPostMsg              = moduser32.NewProc("PostMessageW")
-	pAdjustWindowRectEx   = moduser32.NewProc("AdjustWindowRectEx")
+	modkernel32         = syscall.NewLazyDLL("kernel32.dll")
+	moduser32           = syscall.NewLazyDLL("user32.dll")
+	pGetModuleW         = modkernel32.NewProc("GetModuleHandleW")
+	pCreateWinExW       = moduser32.NewProc("CreateWindowExW")
+	pDefWndProcW        = moduser32.NewProc("DefWindowProcW")
+	pPostQuitMsg        = moduser32.NewProc("PostQuitMessage")
+	pLoadImageW         = moduser32.NewProc("LoadImageW")
+	pSendMessageW       = moduser32.NewProc("SendMessageW")
+	pGetMessageW        = moduser32.NewProc("GetMessageW")
+	pTranslateMsg       = moduser32.NewProc("TranslateMessage")
+	pDispatchMsgW       = moduser32.NewProc("DispatchMessageW")
+	pSetWindowText      = moduser32.NewProc("SetWindowTextW")
+	pPostMsg            = moduser32.NewProc("PostMessageW")
+	pAdjustWindowRectEx = moduser32.NewProc("AdjustWindowRectEx")
 )
 
 // qrBindModeUI Windows: show QR code in native Win32 window, confirm via MessageBox
@@ -135,7 +135,9 @@ func saveTempBMP(img image.Image) (string, error) {
 	return path, os.WriteFile(path, bmp, 0644)
 }
 
-func putU32(b []byte, v uint32) { b[0], b[1], b[2], b[3] = byte(v), byte(v>>8), byte(v>>16), byte(v>>24) }
+func putU32(b []byte, v uint32) {
+	b[0], b[1], b[2], b[3] = byte(v), byte(v>>8), byte(v>>16), byte(v>>24)
+}
 func putU16(b []byte, v uint16) { b[0], b[1] = byte(v), byte(v>>8) }
 
 func showQRWin32Window(result *BindCodeResult, bmpPath string) (string, error) {

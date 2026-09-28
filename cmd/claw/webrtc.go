@@ -298,4 +298,3 @@ func (w *WebRTCConn) WaitConnected(timeout time.Duration) error {
 func (w *WebRTCConn) WaitDisconnected() error {
 	return <-w.disconnectCh
 }
-

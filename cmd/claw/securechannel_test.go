@@ -101,19 +101,19 @@ func TestSecureEnvelopeSeqAlwaysPresent(t *testing.T) {
 func TestSecureChannelEnvelopeClassification(t *testing.T) {
 	daemon, _ := testChannels(t)
 	cases := map[string]string{
-		TypeOutput:               TypeEncTerm,
-		TypeInput:                TypeEncTerm,
-		TypeSessionCreated:       TypeEncTerm,
-		TypeHistoryChunk:         TypeEncTerm,
-		TypeFileSendBegin:        TypeEncFile,
-		TypeFileSendEnd:          TypeEncFile,
-		TypeFileList:             TypeEncFile,
-		TypeDirList:              TypeEncFile,
-		TypeReqPending:           TypeEncFile,
-		TypeProxyConnected:       TypeEncProxy,
-		TypeProxyHttpResponse:    TypeEncProxy,
-		TypeProxyWsMessage:       TypeEncProxy,
-		TypeError:                TypeEncTerm,
+		TypeOutput:            TypeEncTerm,
+		TypeInput:             TypeEncTerm,
+		TypeSessionCreated:    TypeEncTerm,
+		TypeHistoryChunk:      TypeEncTerm,
+		TypeFileSendBegin:     TypeEncFile,
+		TypeFileSendEnd:       TypeEncFile,
+		TypeFileList:          TypeEncFile,
+		TypeDirList:           TypeEncFile,
+		TypeReqPending:        TypeEncFile,
+		TypeProxyConnected:    TypeEncProxy,
+		TypeProxyHttpResponse: TypeEncProxy,
+		TypeProxyWsMessage:    TypeEncProxy,
+		TypeError:             TypeEncTerm,
 	}
 	for innerType, want := range cases {
 		outer, err := daemon.WrapJSON(&Message{Type: innerType, Data: "x"})

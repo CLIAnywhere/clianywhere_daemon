@@ -26,8 +26,8 @@ var wsDialer = &websocket.Dialer{
 // ProxyManager manage all proxy tunnel connections
 type ProxyManager struct {
 	mu         sync.Mutex
-	conns      map[uint32]*ProxyConn    // connId → active TCP proxy connection
-	wsConns    map[string]*ProxyWsConn  // sessionID → active WS proxy connection
+	conns      map[uint32]*ProxyConn   // connId → active TCP proxy connection
+	wsConns    map[string]*ProxyWsConn // sessionID → active WS proxy connection
 	daemon     *Daemon
 	logger     Logger
 	httpClient *http.Client // persistent client with cookie jar for proxy_http_fetch
@@ -77,7 +77,6 @@ func (pm *ProxyManager) HandleConnect(msg *Message) {
 	connIDStr := msg.SessionID
 	targetAddr := msg.Data // "host:port"
 
-
 	// extract uint32 connId from session_id
 	var connID uint32
 	fmt.Sscanf(connIDStr, "conn_%08d", &connID)
@@ -121,7 +120,6 @@ func (pm *ProxyManager) HandleConnect(msg *Message) {
 			Type:      TypeProxyConnected,
 			SessionID: connIDStr,
 		})
-
 
 		// start readLoop: read data from TCP connection and send to app
 		pm.readLoop(pc)

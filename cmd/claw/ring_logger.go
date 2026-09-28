@@ -36,9 +36,9 @@ func NewRingLogger(capacity int) *RingLogger {
 		capacity = 1000
 	}
 	return &RingLogger{
-		logger:      log.New(os.Stderr, "", log.LstdFlags|log.Lshortfile),
-		entries:     make([]LogEntry, capacity),
-		capacity:    capacity,
+		logger:   log.New(os.Stderr, "", log.LstdFlags|log.Lshortfile),
+		entries:  make([]LogEntry, capacity),
+		capacity: capacity,
 	}
 }
 
@@ -115,7 +115,7 @@ func (l *RingLogger) GetRecent(n int) []LogEntry {
 	// readIdx is where the oldest entry is
 	readIdx := (l.writeIdx - l.count + l.capacity) % l.capacity
 	for i := 0; i < n; i++ {
-		result[i] = l.entries[(readIdx + i) % l.capacity]
+		result[i] = l.entries[(readIdx+i)%l.capacity]
 	}
 	return result
 }

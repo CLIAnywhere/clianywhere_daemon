@@ -17,9 +17,9 @@ import (
 
 // unixPty Unix PTY implementation based on creack/pty
 type unixPty struct {
-	f          *os.File
-	cmd        *exec.Cmd
-	initFile   string // temp bash --init-file, cleaned up on Close
+	f        *os.File
+	cmd      *exec.Cmd
+	initFile string // temp bash --init-file, cleaned up on Close
 }
 
 func (p *unixPty) Read(b []byte) (int, error)  { return p.f.Read(b) }

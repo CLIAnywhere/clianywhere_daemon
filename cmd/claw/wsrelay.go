@@ -43,13 +43,13 @@ type WSTurnRelay struct {
 	cfg       *Config
 	logger    Logger
 
-	mu        sync.RWMutex
-	conn      *websocket.Conn
-	connected bool
-	sendCh    chan relayMsg // text message channel (terminal I/O, control messages)
-	binaryCh  chan relayMsg // binary message channel (file chunks)
-	closeCh   chan struct{}
-	once      sync.Once
+	mu          sync.RWMutex
+	conn        *websocket.Conn
+	connected   bool
+	sendCh      chan relayMsg // text message channel (terminal I/O, control messages)
+	binaryCh    chan relayMsg // binary message channel (file chunks)
+	closeCh     chan struct{}
+	once        sync.Once
 	missedPongs int32 // number of consecutive missed pongs
 
 	OnMessage       func(msg *Message)
@@ -67,11 +67,11 @@ type WSTurnRelay struct {
 func NewWSTurnRelay(accessKey string, cfg *Config, logger Logger) *WSTurnRelay {
 	return &WSTurnRelay{
 		accessKey: accessKey,
-		cfg:      cfg,
-		logger:   logger,
-		sendCh:   make(chan relayMsg, 16),
-		binaryCh: make(chan relayMsg, 16),
-		closeCh:  make(chan struct{}),
+		cfg:       cfg,
+		logger:    logger,
+		sendCh:    make(chan relayMsg, 16),
+		binaryCh:  make(chan relayMsg, 16),
+		closeCh:   make(chan struct{}),
 	}
 }
 

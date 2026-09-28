@@ -9,8 +9,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"sync/atomic"
-	"time"
 	"testing"
+	"time"
 
 	"github.com/gorilla/websocket"
 )

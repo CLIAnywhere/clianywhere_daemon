@@ -115,8 +115,8 @@ func disableQuickEditMode() {
 	var mode uint32
 	r1, _, _ := procGetConsoleMode.Call(h, uintptr(unsafe.Pointer(&mode)))
 	if r1 != 0 {
-		mode &^= 0x0040              // clear ENABLE_QUICK_EDIT_MODE
-		mode |= 0x0080               // set ENABLE_EXTENDED_FLAGS (required for the above to take effect)
+		mode &^= 0x0040 // clear ENABLE_QUICK_EDIT_MODE
+		mode |= 0x0080  // set ENABLE_EXTENDED_FLAGS (required for the above to take effect)
 		procSetConsoleMode.Call(h, uintptr(mode))
 	}
 }

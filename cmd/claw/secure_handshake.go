@@ -300,4 +300,3 @@ func (d *Daemon) unwrapIncomingBinary(frame []byte) ([]byte, bool) {
 	}
 	return frame, true
 }
-

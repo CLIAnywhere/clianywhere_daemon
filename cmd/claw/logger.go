@@ -32,10 +32,10 @@ func NewStdLogger() *StdLogger {
 
 func (l *StdLogger) Debugf(format string, args ...any) { l.logger.Printf(format, args...) }
 func (l *StdLogger) Infof(format string, args ...any)  { l.logger.Printf(format, args...) }
-func (l *StdLogger) Warnf(format string, args ...any)   { l.logger.Printf(format, args...) }
-func (l *StdLogger) Errorf(format string, args ...any)  { l.logger.Printf(format, args...) }
-func (l *StdLogger) Fatalf(format string, args ...any)  { l.logger.Fatalf(format, args...) }
-func (l *StdLogger) Writer() io.Writer                   { return os.Stderr }
+func (l *StdLogger) Warnf(format string, args ...any)  { l.logger.Printf(format, args...) }
+func (l *StdLogger) Errorf(format string, args ...any) { l.logger.Printf(format, args...) }
+func (l *StdLogger) Fatalf(format string, args ...any) { l.logger.Fatalf(format, args...) }
+func (l *StdLogger) Writer() io.Writer                 { return os.Stderr }
 
 // logPrintf backward compat: forward log.Printf style calls to Logger
 // prefix parameter is automatically prepended to format
@@ -122,10 +122,10 @@ func newFileLogger() *FileLogger {
 
 func (l *FileLogger) Debugf(format string, args ...any) { l.logger.Printf(format, args...) }
 func (l *FileLogger) Infof(format string, args ...any)  { l.logger.Printf(format, args...) }
-func (l *FileLogger) Warnf(format string, args ...any)   { l.logger.Printf(format, args...) }
-func (l *FileLogger) Errorf(format string, args ...any)  { l.logger.Printf(format, args...) }
-func (l *FileLogger) Fatalf(format string, args ...any)  { l.logger.Fatalf(format, args...) }
-func (l *FileLogger) Writer() io.Writer                   { return l.file }
+func (l *FileLogger) Warnf(format string, args ...any)  { l.logger.Printf(format, args...) }
+func (l *FileLogger) Errorf(format string, args ...any) { l.logger.Printf(format, args...) }
+func (l *FileLogger) Fatalf(format string, args ...any) { l.logger.Fatalf(format, args...) }
+func (l *FileLogger) Writer() io.Writer                 { return l.file }
 
 // ensure FileLogger satisfies Logger
 var _ Logger = (*FileLogger)(nil)

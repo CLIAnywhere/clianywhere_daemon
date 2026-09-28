@@ -132,7 +132,7 @@ func runDaemonProcess() {
 	}
 	// Hold lock for process lifetime, never close
 	// Hold lock for process lifetime, keep reference to prevent GC
-	 daemonLock = lock
+	daemonLock = lock
 
 	logger := NewStdLogger()
 	cfg := DefaultConfig()

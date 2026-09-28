@@ -19,8 +19,8 @@ var (
 )
 
 const (
-	LOCKFILE_EXCLUSIVE_LOCK    = 2
-	LOCKFILE_FAIL_IMMEDIATELY  = 1
+	LOCKFILE_EXCLUSIVE_LOCK   = 2
+	LOCKFILE_FAIL_IMMEDIATELY = 1
 )
 
 // tryLock attempts to acquire an exclusive non-blocking file lock on ~/.clianywhere/daemon.lock.

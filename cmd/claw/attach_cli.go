@@ -1,4 +1,3 @@
-
 //go:build cli
 
 package main
@@ -281,7 +280,6 @@ func addNewShell(conn *websocket.Conn, shell string) string {
 	return ""
 }
 
-
 // ============================================================
 // Attach to session — raw terminal passthrough mode
 // ============================================================
@@ -345,14 +343,30 @@ func sgrCode(cell *xterm.CellData) string {
 	var p []string
 	p = append(p, "0") // reset first
 
-	if cell.IsBold() != 0 { p = append(p, "1") }
-	if cell.IsDim() != 0 { p = append(p, "2") }
-	if cell.IsItalic() != 0 { p = append(p, "3") }
-	if cell.IsUnderline() != 0 { p = append(p, "4") }
-	if cell.IsBlink() != 0 { p = append(p, "5") }
-	if cell.IsInverse() != 0 { p = append(p, "7") }
-	if cell.IsInvisible() != 0 { p = append(p, "8") }
-	if cell.IsStrikethrough() != 0 { p = append(p, "9") }
+	if cell.IsBold() != 0 {
+		p = append(p, "1")
+	}
+	if cell.IsDim() != 0 {
+		p = append(p, "2")
+	}
+	if cell.IsItalic() != 0 {
+		p = append(p, "3")
+	}
+	if cell.IsUnderline() != 0 {
+		p = append(p, "4")
+	}
+	if cell.IsBlink() != 0 {
+		p = append(p, "5")
+	}
+	if cell.IsInverse() != 0 {
+		p = append(p, "7")
+	}
+	if cell.IsInvisible() != 0 {
+		p = append(p, "8")
+	}
+	if cell.IsStrikethrough() != 0 {
+		p = append(p, "9")
+	}
 
 	// foreground color
 	if !cell.IsFgDefault() {
@@ -423,7 +437,7 @@ func rawTerminalPassthrough(conn *websocket.Conn, sessionID string, sessionName 
 	initAlternateScreen()
 
 	done := make(chan struct{})
-	kicked := make(chan struct{}) // closed when kicked
+	kicked := make(chan struct{})     // closed when kicked
 	var intentionalDetach atomic.Bool // set to true on intentional Ctrl+J K detach, prevent WS disconnect from being misinterpreted as kick
 	var inCommandMode atomic.Bool     // Ctrl+J enters command mode, status bar shows different hints based on this flag
 	var closeOnce sync.Once
@@ -830,7 +844,7 @@ func rawTerminalPassthrough(conn *websocket.Conn, sessionID string, sessionName 
 							Cols:      cols,
 							Rows:      termRows,
 						})
-							// trigger full redraw
+						// trigger full redraw
 						sendRender(renderSignal{allDirty: true})
 					}
 				case <-done:
@@ -884,8 +898,8 @@ func rawTerminalPassthrough(conn *websocket.Conn, sessionID string, sessionName 
 
 		// scroll acceleration state
 		var lastScrollTime time.Time
-		var scrollAccel int     // current acceleration multiplier
-		var scrollDir int       // last scroll direction: 1=down, -1=up
+		var scrollAccel int // current acceleration multiplier
+		var scrollDir int   // last scroll direction: 1=down, -1=up
 
 		for {
 			n, err := readStdin(buf)
@@ -918,7 +932,7 @@ func rawTerminalPassthrough(conn *websocket.Conn, sessionID string, sessionName 
 							case 'A':
 								dir = -1 // ↑ scroll up
 							case 'B':
-								dir = 1  // ↓ scroll down
+								dir = 1 // ↓ scroll down
 							}
 							if dir != 0 {
 								i += 2
@@ -967,27 +981,26 @@ func rawTerminalPassthrough(conn *websocket.Conn, sessionID string, sessionName 
 					continue
 				}
 
-
-					// DECCKM translation: when program enables Application Cursor Keys (ESC[?1h),
-					// it expects ESC O A/B/C/D for arrow keys instead of ESC [ A/B/C/D.
-					// The user's terminal always sends normal-mode sequences (ESC [ X),
-					// so we translate them when xterm-go's DECCKM is active.
-					if b == 0x1B && i+2 < len(data) && data[i+1] == '[' {
-						c := data[i+2]
-						if c == 'A' || c == 'B' || c == 'C' || c == 'D' {
-							termMu.Lock()
-							appCursor := localTerm.DecPrivateModes().ApplicationCursorKeys
-							termMu.Unlock()
-							if appCursor {
-								// Translate ESC [ X → ESC O X (application mode)
-								processed = append(processed, 0x1B, 'O', c)
-							} else {
-								processed = append(processed, b, data[i+1], c)
-							}
-							i += 2
-							continue
+				// DECCKM translation: when program enables Application Cursor Keys (ESC[?1h),
+				// it expects ESC O A/B/C/D for arrow keys instead of ESC [ A/B/C/D.
+				// The user's terminal always sends normal-mode sequences (ESC [ X),
+				// so we translate them when xterm-go's DECCKM is active.
+				if b == 0x1B && i+2 < len(data) && data[i+1] == '[' {
+					c := data[i+2]
+					if c == 'A' || c == 'B' || c == 'C' || c == 'D' {
+						termMu.Lock()
+						appCursor := localTerm.DecPrivateModes().ApplicationCursorKeys
+						termMu.Unlock()
+						if appCursor {
+							// Translate ESC [ X → ESC O X (application mode)
+							processed = append(processed, 0x1B, 'O', c)
+						} else {
+							processed = append(processed, b, data[i+1], c)
 						}
+						i += 2
+						continue
 					}
+				}
 				// if scrolling, any input resets to bottom
 				if localTerm.Buffer().YDisp < localTerm.Buffer().YBase {
 					termMu.Lock()
@@ -1007,11 +1020,11 @@ func rawTerminalPassthrough(conn *websocket.Conn, sessionID string, sessionName 
 				})
 			}
 
-				if scrollHandled {
-					// scroll operation triggers full redraw
-					sendRender(renderSignal{allDirty: true})
-				}
+			if scrollHandled {
+				// scroll operation triggers full redraw
+				sendRender(renderSignal{allDirty: true})
 			}
+		}
 	}()
 
 	<-done

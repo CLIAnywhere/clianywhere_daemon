@@ -544,10 +544,10 @@ func (ls *LocalServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case TypeGetStartupStatus:
 			supported := autoRunSupported()
 			ls.send(conn, Message{
-				Type:              TypeStartupStatus,
-				Shortcut:          hasDesktopShortcut(),
-				AutoRun:           supported && hasAutoRun(),
-				AutoRunSupported:  supported,
+				Type:             TypeStartupStatus,
+				Shortcut:         hasDesktopShortcut(),
+				AutoRun:          supported && hasAutoRun(),
+				AutoRunSupported: supported,
 			})
 
 		case TypeSetShortcut:
@@ -562,8 +562,8 @@ func (ls *LocalServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					if r := recover(); r != nil {
 						ls.logger.Errorf("[SHORTCUT] panic during set: %v", r)
 						ls.send(conn, Message{
-							Type:    TypeSetShortcutResult,
-							Error:   fmt.Sprintf("internal panic: %v", r),
+							Type:     TypeSetShortcutResult,
+							Error:    fmt.Sprintf("internal panic: %v", r),
 							Shortcut: hasDesktopShortcut(),
 						})
 					}
