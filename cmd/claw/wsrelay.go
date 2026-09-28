@@ -105,6 +105,14 @@ func (w *WSTurnRelay) Connect(url string) error {
 		return fmt.Errorf("WebSocket connection failed: %w", err)
 	}
 
+	// Protocol-level ping/pong is handled inside gorilla and never reaches
+	// ReadMessage. Each pong resets the missed-pong counter so pingLoop can
+	// judge whether the link is alive.
+	conn.SetPongHandler(func(string) error {
+		atomic.StoreInt32(&w.missedPongs, 0)
+		return nil
+	})
+
 	// send login
 	loginMsg, _ := json.Marshal(map[string]any{
 		"type":             "login",
@@ -337,6 +345,10 @@ func (w *WSTurnRelay) readLoop() {
 
 		switch peek.Type {
 		case "pong":
+			// Compatibility branch: protocol-level pongs are intercepted by
+			// SetPongHandler and never get here. Kept so a server that still
+			// answers with an application-level {"type":"pong"} also resets
+			// the missed-pong counter.
 			atomic.StoreInt32(&w.missedPongs, 0)
 			continue
 		case "p2p_offer", "p2p_answer", "p2p_ice", "peer_online", "peer_offline":
@@ -405,7 +417,14 @@ func (w *WSTurnRelay) writeMsg(msg relayMsg) {
 	}
 }
 
-// pingLoop send ping heartbeat to TurnServer every 8s, disconnect and reconnect after 3 consecutive missed pongs
+// pingLoop send a protocol-level WebSocket ping every 8s, disconnect after 3
+// consecutive missed pongs.
+//
+// Uses conn.WriteControl instead of the old application-level {"type":"ping"}:
+// on the Durable Objects relay the protocol-layer ping is answered by
+// setWebSocketAutoResponse at the CF edge — the DO never wakes, so the ping costs
+// nothing in billable requests or duration. The app-level text ping would wake
+// the DO on every tick.
 func (w *WSTurnRelay) pingLoop() {
 	ticker := time.NewTicker(8 * time.Second)
 	defer ticker.Stop()
@@ -431,12 +450,13 @@ func (w *WSTurnRelay) pingLoop() {
 			}
 
 			atomic.AddInt32(&w.missedPongs, 1)
-			pingMsg, _ := json.Marshal(map[string]any{"type": "ping"})
-			select {
-			case w.sendCh <- relayMsg{data: pingMsg, msgType: websocket.TextMessage}:
-			case <-w.closeCh:
-				return
-			}
+			// Protocol-level pings bypass sendCh so terminal output can never
+			// queue-jam them.
+			_ = conn.WriteControl(
+				websocket.PingMessage,
+				nil,
+				time.Now().Add(5*time.Second),
+			)
 		}
 	}
 }
