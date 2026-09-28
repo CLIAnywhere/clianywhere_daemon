@@ -1,10 +1,49 @@
 package main
 
 // MaxFrameSize is the maximum allowed WebSocket frame size in bytes (both text and binary).
-// DO NOT increase this value — the TurnServer will disconnect any connection
-// that sends a frame larger than 32KB. Keep all payloads (terminal output,
-// file transfer, proxy tunnel, etc.) within this limit including their headers.
-const MaxFrameSize = 31 * 1024 // 31KB
+// The relay (turnserver_worker) accepts frames up to MAX_FRAME_BYTES = 4MB,
+// so file transfer chunks can be far larger than the old 31KB Go turnserver limit.
+// Keep all payloads within this limit including their headers.
+const MaxFrameSize = 4 * 1024 * 1024 // 4MB
+
+// P2PMaxMessageSize is the per-message ceiling on the WebRTC DataChannel.
+//
+// ⚠️ Hard limit from pion: sctp's defaultMaxMessageSize = 65536, and
+// stream.go rejects anything larger with ErrOutboundPacketTooLarge — the send
+// just fails silently. So file chunks sized for the TS relay (4MB) would break
+// the moment a P2P channel takes over. 1KB is reserved for the E2E binary
+// envelope (SecureBinaryOverhead) plus the 9-byte file header.
+//
+// FileTransferManager picks this instead of MaxFrameSize whenever the active
+// channel is p2p; see Daemon.frameLimitForChannel().
+const P2PMaxMessageSize = 64*1024 - 1024 // 64512
+
+// Proxy tunnel read buffers, per active channel.
+//
+// The TCP tunnel sends raw binary (OpcodeProxyData), so it is bounded by the
+// channel transport rather than by JSON/E2E text limits:
+//   - p2p: pion/sctp rejects anything over 65536, so stay well under it
+//   - relay: the relay accepts up to MAX_FRAME_BYTES = 4MB
+//
+// 512K (not 4MB) on the relay side because this buffer is pre-allocated per
+// tunnel and never grown: 4MB × 30 tunnels = 120MB of resident heap on the
+// daemon for a path whose throughput is usually limited by the far-end service
+// anyway. 512K still cuts message counts 16x versus the old 31KB while keeping
+// 30 tunnels at ~15MB.
+//
+// Historical note: the buffer used to be ProxyFrameChunk (31KB) on both
+// channels. Frame size necessarily equals buffer size, because the tunnel must
+// forward whatever it just read — batching to fill a larger frame would add
+// latency to every proxied request.
+const (
+	// ProxyP2PChunk is the max raw payload per proxy frame on the P2P channel
+	// (60KB), leaving room for the 5-byte header and the 25-byte E2E envelope.
+	ProxyP2PChunk = 60 * 1024
+
+	// ProxyRelayChunk is the max raw payload per proxy frame on the TS relay
+	// channel (512KB).
+	ProxyRelayChunk = 512 * 1024
+)
 
 // MaxSecCodeAttempts is the maximum number of consecutive failed security-code
 // verification attempts before the daemon shuts down to prevent brute-force
@@ -44,6 +83,10 @@ const (
 	OpcodeFileTransfer = 0x01 // file transfer: [0x01][4B fileId][4B chunkIdx][data...] (9-byte header)
 	// Reserved: 0x02 image, 0x03 clipboard, 0x04 port forwarding, etc.
 	OpcodeProxyData = 0x05 // proxy tunnel data: [0x05][4B connId BE][payload...] (5-byte header)
+
+	// proxyFrameHeaderSize is the fixed prefix of every OpcodeProxyData frame
+	// (1B opcode + 4B big-endian connId).
+	proxyFrameHeaderSize = 5
 
 	// OpcodeSecureBinary wraps an encrypted frame when the secure channel is
 	// active: [0x07][8B seq BE][AES-GCM ciphertext of the original frame

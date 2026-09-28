@@ -1375,6 +1375,7 @@ func (d *Daemon) sendJSON(msg *Message) {
 		d.wsMu.RUnlock()
 		if relay != nil && relay.Connected() {
 			relay.SendJSON(msg)
+			return
 		}
 	}
 }
@@ -1410,6 +1411,7 @@ func (d *Daemon) sendJSONWithBackpressure(msg *Message, threshold uint64) {
 	d.wsMu.RUnlock()
 	if relay != nil && relay.Connected() {
 		relay.SendJSON(msg)
+		return
 	}
 }
 
@@ -1447,6 +1449,7 @@ func (d *Daemon) sendBytes(data []byte) {
 		d.wsMu.RUnlock()
 		if relay != nil && relay.Connected() {
 			relay.SendBinary(data)
+			return
 		}
 	}
 }
@@ -1478,6 +1481,46 @@ func (d *Daemon) sendBytesWithBackpressure(data []byte, threshold uint64) {
 			relay.SendBinaryBlocking(data)
 		}
 	}
+}
+
+// channelIsP2P reports whether the app has selected the WebRTC P2P channel.
+// Empty mode means "not selected yet" and defaults to TS (see the field comment).
+func (d *Daemon) channelIsP2P() bool {
+	d.channelMu.RLock()
+	defer d.channelMu.RUnlock()
+	return d.channelMode == "p2p"
+}
+
+// frameLimitForChannel returns the largest single frame the current channel can
+// carry.
+//
+// The two channels have very different ceilings:
+//   - ts: the relay (turnserver_worker) accepts MAX_FRAME_BYTES = 4MB
+//   - p2p: pion/sctp rejects anything over 65536 with ErrOutboundPacketTooLarge
+//
+// File transfer sizes its chunks against this, so a transfer started while on
+// P2P stays well under the DataChannel limit instead of failing mid-send.
+func (d *Daemon) frameLimitForChannel() int {
+	if d.channelIsP2P() {
+		return P2PMaxMessageSize
+	}
+	return MaxFrameSize
+}
+
+// proxyPayloadLimitForChannel returns the largest raw payload one proxy
+// (OpcodeProxyData) frame may carry on the active channel.
+//
+// Distinct from frameLimitForChannel: the tunnel's read buffer is pre-allocated
+// per connection, so the relay side uses ProxyRelayChunk (512KB) rather than the
+// full 4MB the relay would accept — see the constant's comment for the memory
+// reasoning. The 5-byte frame header and the 26-byte E2E envelope are subtracted
+// so the finished frame always fits.
+func (d *Daemon) proxyPayloadLimitForChannel() int {
+	base := ProxyRelayChunk
+	if d.channelIsP2P() {
+		base = ProxyP2PChunk
+	}
+	return base - proxyFrameHeaderSize - SecureBinaryOverhead
 }
 
 // sendBytesCancelable blocking send with cancel (for file transfer, returns immediately when cancel is closed)

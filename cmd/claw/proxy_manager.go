@@ -128,7 +128,14 @@ func (pm *ProxyManager) HandleConnect(msg *Message) {
 
 // readLoop continuously read data from TCP connection, construct binary frames and send to app
 func (pm *ProxyManager) readLoop(pc *ProxyConn) {
-	buf := make([]byte, MaxFrameSize-5) // 5-byte proxy data header
+	// Buffer size is fixed for the lifetime of this tunnel and equals the frame
+	// size (we must forward whatever we just read; batching would add latency).
+	// Sized against the channel active *now*: if the app switches P2P↔relay
+	// mid-tunnel, this tunnel keeps its original size, which stays valid on
+	// either channel because the smaller of the two limits is what matters for
+	// correctness — only message counts change.
+	bufSize := pm.daemon.proxyPayloadLimitForChannel()
+	buf := make([]byte, bufSize)
 	defer pm.removeConn(pc.ID)
 
 	for {
@@ -140,9 +147,6 @@ func (pm *ProxyManager) readLoop(pc *ProxyConn) {
 
 		n, err := pc.tcpConn.Read(buf)
 		if n > 0 {
-			frameSize := 5 + n
-			if frameSize > 31*1024 {
-			}
 			// construct binary frame: [0x05][4B connId BE][payload...]
 			frame := make([]byte, 5+n)
 			frame[0] = OpcodeProxyData
@@ -319,8 +323,16 @@ func (pm *ProxyManager) HandleHttpFetch(msg *Message) {
 		headers["Content-Length"] = fmt.Sprintf("%d", len(body))
 		headersJSON, _ := json.Marshal(headers)
 
-		// Base64 encode and chunk to fit MaxFrameSize (31KB).
-		// Reserve ~8KB for JSON envelope overhead → 20KB per base64 chunk.
+		// Base64 the body because this path rides a JSON text message, not a
+		// binary frame (Web app's Service Worker cannot open raw TCP).
+		//
+		// ⚠️ The chunk limit is SecureMaxTextPayload (24000), NOT MaxFrameSize:
+		// the inner JSON must survive E2E encryption, and securechannel.go
+		// rejects anything larger outright. Base64 output is [A-Za-z0-9+/=]
+		// only, so it does not expand during JSON escaping — 20KB stays safe.
+		//
+		// This is also the web-app-only path; the mobile app uses the binary
+		// TCP tunnel (OpcodeProxyData), which is sized separately.
 		bodyB64 := base64.StdEncoding.EncodeToString(body)
 		const chunkSize = 20 * 1024
 		totalLen := len(bodyB64)
