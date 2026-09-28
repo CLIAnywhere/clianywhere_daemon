@@ -1042,11 +1042,74 @@ func (d *Daemon) handleHistory(msg *Message) {
 	d.subMu.Unlock()
 }
 
-const historyChunkSize = 4096 // 4KB raw data per chunk
+// historyChunkUnit is the minimum slice of history sent per message. Chunks grow
+// by whole units until the marshalled message approaches SecureMaxTextPayload,
+// so every chunk is a multiple of this (and at least this large).
+const historyChunkUnit = 4096 // 4KB raw data per unit
+
+// historyChunkMargin reserves room in SecureMaxTextPayload for the JSON envelope
+// (type / session_id / seq / chunk_index / total_chunks) around the data.
+const historyChunkMargin = 2048
+
+// historyPlainChunks splits scrollback into slices whose marshalled
+// history_chunk message stays under SecureMaxTextPayload.
+//
+// Cannot use a fixed raw chunk size: terminal output is full of ANSI escapes, and
+// json.Marshal renders each ESC (0x1B) as a six-byte \u001b sequence. A 20KB raw
+// slice of ANSI-heavy output therefore marshals to roughly 50KB and is rejected
+// outright by securechannel.go (E2E is on in practice for every session). So each
+// chunk is validated by actually marshalling it, growing greedily while it fits:
+// clean text merges up toward ~24KB, ANSI-dense output falls back to 4KB units.
+// Either way the result is far below both channel frame limits (P2P 64KB, relay
+// 4MB), so no channel check is needed here — SecureMaxTextPayload binds first.
+func historyPlainChunks(data []byte) [][]byte {
+	budget := SecureMaxTextPayload - historyChunkMargin
+
+	var chunks [][]byte
+	for start := 0; start < len(data); {
+		end := start + historyChunkUnit
+		if end > len(data) {
+			end = len(data)
+		}
+
+		// Grow by whole units while the marshalled message still fits.
+		for end < len(data) {
+			next := end + historyChunkUnit
+			if next > len(data) {
+				next = len(data)
+			}
+			if !historyChunkFits(data[start:next], budget) {
+				break
+			}
+			end = next
+		}
+
+		chunks = append(chunks, data[start:end])
+		start = end
+	}
+	return chunks
+}
+
+// historyChunkFits reports whether a history_chunk message carrying raw
+// marshals to at most budget bytes.
+func historyChunkFits(raw []byte, budget int) bool {
+	// Representative field values so the size check matches the real message;
+	// only the data payload materially affects the marshalled length.
+	b, err := json.Marshal(&Message{
+		Type:        TypeHistoryChunk,
+		SessionID:   "00000000000000000000000000000000",
+		Data:        string(raw),
+		ChunkIndex:  0,
+		TotalChunks: 1,
+		Seq:         0,
+	})
+	return err == nil && len(b) <= budget
+}
 
 // sendHistoryChunks send history data in chunks
 func (d *Daemon) sendHistoryChunks(sessionID string, data []byte, seq uint64) {
-	total := (len(data) + historyChunkSize - 1) / historyChunkSize
+	chunks := historyPlainChunks(data)
+	total := len(chunks)
 
 	// (1) send start first, indicating total chunks
 	d.sendJSON(&Message{
@@ -1057,17 +1120,11 @@ func (d *Daemon) sendHistoryChunks(sessionID string, data []byte, seq uint64) {
 	})
 
 	// (2) send chunk by chunk
-	for i := 0; i < total; i++ {
-		start := i * historyChunkSize
-		end := start + historyChunkSize
-		if end > len(data) {
-			end = len(data)
-		}
-
+	for i, raw := range chunks {
 		chunkMsg := &Message{
 			Type:        TypeHistoryChunk,
 			SessionID:   sessionID,
-			Data:        string(data[start:end]),
+			Data:        string(raw),
 			ChunkIndex:  i,
 			TotalChunks: total,
 		}
