@@ -73,6 +73,13 @@ type Daemon struct {
 	subscribed map[string]bool
 	subMu      sync.RWMutex
 
+	// Relay output batching (see output_batcher.go). lastInputAt is the unix-ms
+	// timestamp of the latest keyboard input (remote app or local attach) and
+	// drives the interactive/idle flush tiers; outBatcher is created in Init
+	// (nil before that / in bare-Daemon tests).
+	lastInputAt atomic.Int64
+	outBatcher  *outputBatcher
+
 	// file transfer
 	fileTransfer *FileTransferManager
 
@@ -157,6 +164,16 @@ func (d *Daemon) Init() {
 
 	// 6. start local WebSocket service (for local attach)
 	d.localServer = StartLocalServer(d, d.logger, nil)
+
+	// 7. relay output batcher (the relay DO is billed per incoming WS message;
+	// see output_batcher.go). The send hook is the RAW channel send — the
+	// batch flush must not re-enter sendJSON, which flushes first.
+	d.outBatcher = newOutputBatcher(outputBatcherDeps{
+		now:         time.Now,
+		interactive: d.interactiveOutput,
+		send:        d.sendJSONDirect,
+	})
+	d.outBatcher.Start()
 }
 
 // StartRemote start remote connection with accessKey (signaling + TS relay)
@@ -674,6 +691,12 @@ func (d *Daemon) exitWithReason(reason, detail string) {
 
 func (d *Daemon) Stop() {
 	d.stopOnce.Do(func() {
+		// Flush relay-batched output while the channel is still up, then stop
+		// the flusher goroutine.
+		if d.outBatcher != nil {
+			d.outBatcher.FlushAll()
+			d.outBatcher.Stop()
+		}
 		close(d.stopCh)
 		// cancel TS relay loop too so it exits even if blocked in
 		// sleepOrStopCtx or between iterations
@@ -776,6 +799,11 @@ func (d *Daemon) handleMessage(msg *Message, source string) {
 		if d.proxyManager != nil {
 			d.proxyManager.CloseAll()
 		}
+		if d.outBatcher != nil {
+			// Connection is going away; batched leftovers are unrecoverable
+			// (the app re-pulls history after reconnect) — drop them.
+			d.outBatcher.Reset()
+		}
 		d.CloseRTC()
 		d.rtcMu.Lock()
 		d.pendingICE = nil
@@ -810,6 +838,7 @@ func (d *Daemon) handleMessage(msg *Message, source string) {
 		if !d.checkSecCode() {
 			return
 		}
+		d.markInput()
 		d.ptyMgr.Write(msg.SessionID, []byte(msg.Data))
 	case TypeResize:
 		if !d.checkSecCode() {
@@ -1028,10 +1057,26 @@ func (d *Daemon) handleHistory(msg *Message) {
 	var data []byte
 	var seq uint64
 
-	if msg.Cols > 0 && msg.Rows > 0 {
-		data, seq = d.ptyMgr.GetHistoryAt(msg.SessionID, msg.Cols, msg.Rows)
+	serialize := func() uint64 {
+		if msg.Cols > 0 && msg.Rows > 0 {
+			data, seq = d.ptyMgr.GetHistoryAt(msg.SessionID, msg.Cols, msg.Rows)
+		} else {
+			data, seq = d.ptyMgr.GetHistory(msg.SessionID)
+		}
+		return seq
+	}
+
+	// Serialize the snapshot atomically against batch flushes: history covers
+	// every write ≤ seq, so the output batch is sealed at seq — entries ≤ seq
+	// leave before the history message on the wire (the app buffers them and
+	// skips them as duplicates), and later writes start a fresh segment
+	// strictly > seq. Without the seal a batch could straddle the snapshot and
+	// its pre-seq bytes would be replayed twice client-side (batched data is
+	// concatenated and cannot be trimmed there).
+	if d.outBatcher != nil {
+		d.outBatcher.SealAt(serialize)
 	} else {
-		data, seq = d.ptyMgr.GetHistory(msg.SessionID)
+		serialize()
 	}
 
 	d.logger.Infof("[SESSION] handleHistory: session=%s cols=%d rows=%d dataLen=%d seq=%d", msg.SessionID, msg.Cols, msg.Rows, len(data), seq)
@@ -1198,6 +1243,14 @@ func (d *Daemon) handleChannelSelect(msg *Message) {
 	channel := msg.Data // "p2p" or "ts"
 	if channel != "p2p" && channel != "ts" {
 		return
+	}
+
+	// Flush BEFORE any teardown: the generic flush inside sendJSON would only
+	// fire at the channel_selected reply — after the secure channel and
+	// channelMode have already been switched, i.e. too late to wrap the batch
+	// with the old keys and route it on the old channel.
+	if d.outBatcher != nil {
+		d.outBatcher.FlushAll()
 	}
 
 	// TS→P2P switch: keys are per-channel, so tear down the encrypted channel
@@ -1403,16 +1456,65 @@ func (d *Daemon) sendOutput(sessionID, data string, seq uint64) {
 	if atomic.LoadInt32(&d.secCodeVerified) != 1 {
 		return
 	}
-	d.sendJSON(&Message{
-		Type:      TypeOutput,
-		SessionID: sessionID,
-		Data:      data,
-		Seq:       seq,
-	})
+
+	if d.channelIsP2P() || d.outBatcher == nil {
+		// P2P DataChannel messages are free — per-write send, zero latency.
+		// (outBatcher==nil is the bare-Daemon fallback path.)
+		d.sendJSONDirect(&Message{
+			Type:      TypeOutput,
+			SessionID: sessionID,
+			Data:      data,
+			Seq:       seq,
+			Outputs:   1,
+		})
+		return
+	}
+	if !d.relayConnected() {
+		// Relay down: same as the old per-message drop — never buffer into an
+		// unusable channel, or a long outage would grow the batch unbounded.
+		return
+	}
+	d.outBatcher.Add(sessionID, []byte(data), seq)
 }
 
-// sendJSON send via current selected channel (single-channel mode, no auto-switch)
+// markInput records the time of the latest keyboard input (remote app or
+// local attach) and drives the interactive/idle flush tiers of the output
+// batcher. Resize deliberately does NOT count as input — it triggers a bulk
+// full-screen repaint that the idle tier batches just fine.
+func (d *Daemon) markInput() {
+	d.lastInputAt.Store(time.Now().UnixMilli())
+}
+
+// interactiveOutput reports whether the last input is recent enough to keep
+// terminal echo in the low-latency flush tier.
+func (d *Daemon) interactiveOutput() bool {
+	last := d.lastInputAt.Load()
+	return last != 0 && time.Now().UnixMilli()-last < outputInteractiveWindow.Milliseconds()
+}
+
+// relayConnected reports whether the TS relay WebSocket is currently usable.
+func (d *Daemon) relayConnected() bool {
+	d.wsMu.RLock()
+	defer d.wsMu.RUnlock()
+	return d.wsRelay != nil && d.wsRelay.Connected()
+}
+
+// sendJSON sends a message, flushing any batched relay output first so output
+// always precedes control messages on the wire: session_exit must not
+// overtake the last batch, history_start must follow a sealed batch, and any
+// other control reply naturally drains 20KB-or-less batches that no one would
+// notice being sent early. Every non-output sender goes through here. Output
+// itself bypasses this on both of its paths (P2P per-write send and the
+// batcher flush use sendJSONDirect) to avoid re-entering the flush.
 func (d *Daemon) sendJSON(msg *Message) {
+	if d.outBatcher != nil {
+		d.outBatcher.FlushAll()
+	}
+	d.sendJSONDirect(msg)
+}
+
+// sendJSONDirect send via current selected channel (single-channel mode, no auto-switch)
+func (d *Daemon) sendJSONDirect(msg *Message) {
 	// E2E: wrap into an encrypted envelope when the secure channel is active and
 	// the type is not plaintext-exempt. On wrap failure the message is dropped
 	// (never falls back to plaintext).

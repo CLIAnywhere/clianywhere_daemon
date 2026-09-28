@@ -369,6 +369,9 @@ func (ls *LocalServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			ls.clientSessionsMu.Unlock()
 
 		case TypeInput:
+			// Local keystrokes also drive the interactive flush tier: echo of
+			// locally-typed keys must stay low-latency for the remote app viewer.
+			ls.daemon.markInput()
 			ls.daemon.ptyMgr.Write(msg.SessionID, []byte(msg.Data))
 
 		case TypeResize:

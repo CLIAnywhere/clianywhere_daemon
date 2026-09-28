@@ -189,6 +189,11 @@ func (d *Daemon) handleSecConfirm(msg *Message) {
 // resetSecure tears down the encrypted channel (keys zeroed) and any pending
 // handshake. Called on channel switch, peer offline and transport teardown.
 func (d *Daemon) resetSecure(reason string) {
+	// Buffered relay output can no longer be wrapped with the torn-down keys;
+	// drop it — the app rebuilds from history after re-handshake.
+	if d.outBatcher != nil {
+		d.outBatcher.Reset()
+	}
 	d.secureMu.Lock()
 	if d.secure != nil {
 		d.secure.Reset()

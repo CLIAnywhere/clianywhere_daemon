@@ -261,24 +261,34 @@ const (
 
 // DataChannel JSON message envelope
 type Message struct {
-	Type         string         `json:"type"`
-	Reason       string         `json:"reason,omitempty"`
-	SessionID    string         `json:"session_id,omitempty"`
-	Data         string         `json:"data,omitempty"`
-	Shell        string         `json:"shell,omitempty"`
-	LoginShell   *bool          `json:"login_shell,omitempty"` // nil → use default (true)
-	Cols         int            `json:"cols,omitempty"`
-	Rows         int            `json:"rows,omitempty"`
-	PID          int            `json:"pid,omitempty"`
-	ExitCode     int            `json:"exit_code,omitempty"`
-	Error        string         `json:"error,omitempty"`
-	Sessions     []string       `json:"sessions,omitempty"`
-	SessionInfos []SessionInfo  `json:"session_infos,omitempty"`
-	Shells       []ShellInfo    `json:"shells,omitempty"`
-	Seq          uint64         `json:"seq"`
-	TotalChunks  int            `json:"total_chunks"`
-	ChunkIndex   int            `json:"chunk_index"`
-	Extra        map[string]any `json:"-"`
+	Type         string        `json:"type"`
+	Reason       string        `json:"reason,omitempty"`
+	SessionID    string        `json:"session_id,omitempty"`
+	Data         string        `json:"data,omitempty"`
+	Shell        string        `json:"shell,omitempty"`
+	LoginShell   *bool         `json:"login_shell,omitempty"` // nil → use default (true)
+	Cols         int           `json:"cols,omitempty"`
+	Rows         int           `json:"rows,omitempty"`
+	PID          int           `json:"pid,omitempty"`
+	ExitCode     int           `json:"exit_code,omitempty"`
+	Error        string        `json:"error,omitempty"`
+	Sessions     []string      `json:"sessions,omitempty"`
+	SessionInfos []SessionInfo `json:"session_infos,omitempty"`
+	Shells       []ShellInfo   `json:"shells,omitempty"`
+	Seq          uint64        `json:"seq"`
+	TotalChunks  int           `json:"total_chunks"`
+	ChunkIndex   int           `json:"chunk_index"`
+
+	// Outputs ("n") is the number of PTY writes merged into an output
+	// message; Seq is the LAST write's seq, so the writes covered are
+	// [Seq-Outputs+1, Seq]. The value 0 marks a continuation fragment: a
+	// single write whose marshalled form exceeds the secure payload budget
+	// (ANSI-dense output) is split, and the tail pieces carry n=0 with the
+	// same Seq — the app writes them without advancing its dedup watermark.
+	// Deliberately NOT omitempty: "n":0 must be distinguishable from a
+	// missing field, which readers interpret as 1 (unbatched single write).
+	Outputs int            `json:"n"`
+	Extra   map[string]any `json:"-"`
 
 	// file transfer
 	FileID          uint32       `json:"file_id,omitempty"`
