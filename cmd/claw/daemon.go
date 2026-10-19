@@ -71,7 +71,13 @@ type Daemon struct {
 
 	// set of sessions subscribed by frontend: only sessions that went through request_history receive real-time output
 	subscribed map[string]bool
-	subMu      sync.RWMutex
+
+	// sessions muted at the app's request (push_pause): sendOutput drops
+	// their writes while history keeps accumulating — request_history for a
+	// session lifts its mute (see handlePushPause / handleHistory). Guarded
+	// by subMu together with subscribed.
+	muted map[string]bool
+	subMu sync.RWMutex
 
 	// Relay output batching (see output_batcher.go). lastInputAt is the unix-ms
 	// timestamp of the latest keyboard input (remote app or local attach) and
@@ -117,6 +123,7 @@ func NewDaemon(accessKey string, cfg *Config, logger Logger) *Daemon {
 		cfg:        cfg,
 		logger:     logger,
 		subscribed: make(map[string]bool),
+		muted:      make(map[string]bool),
 		stopCh:     make(chan struct{}),
 	}
 }
@@ -134,6 +141,7 @@ func (d *Daemon) Init() {
 	d.ptyMgr.OnExit = func(sessionID string, exitCode int) {
 		d.subMu.Lock()
 		delete(d.subscribed, sessionID)
+		delete(d.muted, sessionID)
 		d.subMu.Unlock()
 
 		d.sendJSON(&Message{
@@ -814,6 +822,7 @@ func (d *Daemon) handleMessage(msg *Message, source string) {
 		d.channelMu.Unlock()
 		d.subMu.Lock()
 		d.subscribed = make(map[string]bool)
+		d.muted = make(map[string]bool)
 		d.subMu.Unlock()
 	case TypePeerOffline:
 		d.handlePeerOffline()
@@ -859,6 +868,11 @@ func (d *Daemon) handleMessage(msg *Message, source string) {
 			return
 		}
 		d.handleHistory(msg)
+	case TypePushPause:
+		if !d.checkSecCode() {
+			return
+		}
+		d.handlePushPause(msg)
 	case TypePing:
 		d.sendJSON(&Message{Type: TypePong})
 	case TypeChannelSelect:
@@ -1066,6 +1080,11 @@ func (d *Daemon) handleHistory(msg *Message) {
 		return seq
 	}
 
+	// request_history doubles as the resume signal for push_pause: the app
+	// asks for the accumulated state, so live output resumes right after the
+	// history replay. Done before serializing so nothing races the unmute.
+	d.unmutePush(msg.SessionID)
+
 	// Serialize the snapshot atomically against batch flushes: history covers
 	// every write ≤ seq, so the output batch is sealed at seq — entries ≤ seq
 	// leave before the history message on the wire (the app buffers them and
@@ -1096,6 +1115,43 @@ func (d *Daemon) handleHistory(msg *Message) {
 	d.subMu.Lock()
 	d.subscribed[msg.SessionID] = true
 	d.subMu.Unlock()
+}
+
+// handlePushPause stops pushing output for one session (or every subscribed
+// session when SessionID is empty — the app's "user walked away" / backgrounded
+// state). The relay bills per WS message, so pushing output nobody reads is
+// pure cost. Muting is lossless: PTY output keeps flowing into the scrollback,
+// and request_history lifts the mute while returning the accumulated state.
+func (d *Daemon) handlePushPause(msg *Message) {
+	// Flush the batcher first so the mute takes effect on a drained wire —
+	// anything still buffered would otherwise slip out on the next flush tick.
+	if d.outBatcher != nil {
+		d.outBatcher.FlushAll()
+	}
+
+	d.subMu.Lock()
+	if msg.SessionID == "" {
+		for id := range d.subscribed {
+			d.muted[id] = true
+		}
+	} else {
+		d.muted[msg.SessionID] = true
+	}
+	mutedCount := len(d.muted)
+	d.subMu.Unlock()
+	d.logger.Infof("[PUSH-PAUSE] session=%q muted (muted=%d)", msg.SessionID, mutedCount)
+}
+
+// unmutePush lifts the push_pause mute for one session. Called from
+// handleHistory: the incoming request_history is the app's resume signal.
+func (d *Daemon) unmutePush(sessionID string) {
+	d.subMu.Lock()
+	wasMuted := d.muted[sessionID]
+	delete(d.muted, sessionID)
+	d.subMu.Unlock()
+	if wasMuted {
+		d.logger.Infof("[PUSH-PAUSE] session=%q unmuted (history request)", sessionID)
+	}
 }
 
 // historyChunkUnit is the minimum slice of history sent per message. Chunks grow
@@ -1448,8 +1504,9 @@ func (d *Daemon) sendOutput(sessionID, data string, seq uint64) {
 	// 2. send to subscribed app (independent of local controllers)
 	d.subMu.RLock()
 	sub := d.subscribed[sessionID]
+	muted := d.muted[sessionID]
 	d.subMu.RUnlock()
-	if !sub {
+	if !sub || muted {
 		return
 	}
 	// 强制加密：未完成握手前不下发会话内容（防通道切换重握手窗口期明文输出）

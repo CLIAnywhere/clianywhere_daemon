@@ -155,9 +155,18 @@ const (
 	TypeChannelSelect   = "channel_select"
 	TypeChannelSelected = "channel_selected"
 	TypeChannelFailed   = "channel_failed"
-	TypeKicked          = "kicked"
-	TypePeerOnline      = "peer_online"
-	TypePeerOffline     = "peer_offline"
+
+	// TypePushPause asks the daemon to stop pushing output for one session
+	// (SessionID set) or every subscribed session (SessionID empty — the
+	// "user walked away" state). The relay bills per WS message, so a
+	// foreground app with no user present keeps paying for output nobody
+	// reads. Muted sessions keep accumulating history on the daemon side;
+	// request_history lifts the mute and returns the full state, so resume
+	// needs no separate message type.
+	TypePushPause   = "push_pause"
+	TypeKicked      = "kicked"
+	TypePeerOnline  = "peer_online"
+	TypePeerOffline = "peer_offline"
 
 	// file transfer
 	TypeFileSendBegin   = "file_send_begin"
