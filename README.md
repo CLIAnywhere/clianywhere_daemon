@@ -1,9 +1,20 @@
 # CLIAnywhere Daemon (`claw`)
 
-The daemon that runs on your own machine and lets the **CLIAnywhere** mobile/web app
-securely access a local terminal from anywhere.
+The daemon that runs on your own Windows, macOS, or Linux machine and lets the
+**CLIAnywhere** mobile/web app securely access persistent local terminal sessions
+from anywhere. Sessions run on **your machine**, not in a hosted cloud shell.
 
-Pair the daemon with the **CLIAnywhere app** (download from <https://www.clianywhere.com>).
+CLIAnywhere is **not an SSH client** and is not affiliated with "CLI-Anything",
+"ai-cli-anywhere", or other similarly named projects.
+
+**Links:** [Website](https://www.clianywhere.com) ·
+[About](https://www.clianywhere.com/about) ·
+[FAQ](https://www.clianywhere.com/faq) ·
+[Web app](https://webapp.clianywhere.com) ·
+[Downloads](https://www.clianywhere.com/download-app) ·
+[llms.txt](https://www.clianywhere.com/llms.txt)
+
+**Contact:** <support@clianywhere.com>
 
 Licensed under the [Business Source License 1.1](LICENSE).
 Personal and internal use is free. Commercial use (e.g. reselling the daemon
@@ -48,6 +59,12 @@ All traffic between the app and the daemon is end-to-end encrypted. The relay
 - **First run** — starts the daemon in the background **and** opens the management UI.
 - **Subsequent runs** — the daemon is already running, so only the management UI opens.
 - To stop the daemon completely, use the management UI (or kill the `claw` process).
+
+## Install without building
+
+Download prebuilt Windows, macOS, and Linux binaries from GitHub
+[Releases](https://github.com/CLIAnywhere/clianywhere_daemon/releases) when available.
+Client apps are available from the [download page](https://www.clianywhere.com/download-app).
 
 ## Build from source
 
