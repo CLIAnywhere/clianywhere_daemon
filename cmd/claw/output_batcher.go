@@ -6,7 +6,7 @@ package main
 // (requests) plus wake-up duration. Without batching every PTY read becomes
 // its own `output` message — a vim full-screen redraw alone is dozens of small
 // writes, each one waking (and billing) the DO. This batcher merges output
-// writes on the daemon egress path so the relay sees at most ~3.3 msg/s when
+// writes on the daemon egress path so the relay sees at most ~1.7 msg/s when
 // idle and ~100 msg/s while typing, instead of hundreds.
 //
 // Two-tier flush interval, keyed on "recent keyboard input":
@@ -14,7 +14,7 @@ package main
 //     imperceptible (worst case ~10ms tick + 10ms deadline), while vim-style
 //     redraw bursts are still merged — they contain no input gaps, so sending
 //     them per-write would defeat the whole point.
-//   - idle (top / tail -f / build output): 300ms.
+//   - idle (Claude streaming / tail -f / build output): 600ms.
 //
 // Only `output` is batched. Input, resize, control messages, file frames and
 // history chunks keep their existing direct paths. P2P never batches — the
@@ -35,15 +35,18 @@ const (
 	// outputInteractiveWindow is how long after the last keystroke the session
 	// counts as interactive. Echo returns within ~5-50ms but a vim redraw can
 	// run 100-300ms; a shorter window would let the tail of a redraw fall into
-	// the 300ms tier and feel sticky.
+	// the idle tier and feel sticky.
 	outputInteractiveWindow = 1 * time.Second
 
 	// outputInteractiveFlush is the flush interval while interactive.
 	outputInteractiveFlush = 10 * time.Millisecond
 
-	// outputIdleFlush is the flush interval with no recent input (top, tail -f,
-	// compile output) — latency is acceptable, message count is what matters.
-	outputIdleFlush = 300 * time.Millisecond
+	// outputIdleFlush is the flush interval with no recent input (Claude
+	// streaming, tail -f, compile output) — latency is acceptable, message
+	// count is what matters. 600ms keeps streamed text readable (human reading
+	// pace is far slower) while halving the relay message rate again from the
+	// old 300ms; spinner-style animations just look a bit choppier.
+	outputIdleFlush = 600 * time.Millisecond
 
 	// outputFlushTick is the flusher goroutine resolution. 10ms so the
 	// interactive deadline is honored with at most one tick of extra delay;
@@ -52,7 +55,7 @@ const (
 
 	// outputRawCap is the raw byte budget per session buffer. Reaching it
 	// flushes early instead of waiting for the time window — under bulk output
-	// (cat a large file) the buffer fills in far less than 300ms, so latency
+	// (cat a large file) the buffer fills in far less than 600ms, so latency
 	// stays low while message size stays near the payload budget.
 	outputRawCap = 24 * 1024
 

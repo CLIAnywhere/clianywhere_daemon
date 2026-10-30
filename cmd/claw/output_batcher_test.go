@@ -100,23 +100,23 @@ func TestOutputBatcherInteractiveDeadline(t *testing.T) {
 	}
 }
 
-// idle tier flushes at the 300ms deadline, not before.
+// idle tier flushes at the 600ms deadline, not before.
 func TestOutputBatcherIdleDeadline(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(0, 0)}
 	b, r := newTestBatcher(clock.Now, always(false))
 
 	b.Add("s1", []byte("a"), 1)
 
-	clock.Advance(299 * time.Millisecond)
+	clock.Advance(599 * time.Millisecond)
 	b.tick()
 	if n := len(r.snapshot()); n != 0 {
 		t.Fatalf("flushed %d messages before the idle deadline", n)
 	}
 
-	clock.Advance(1 * time.Millisecond) // 300ms total
+	clock.Advance(1 * time.Millisecond) // 600ms total
 	b.tick()
 	if n := len(r.snapshot()); n != 1 {
-		t.Fatalf("expected flush at the 300ms idle deadline, got %d", n)
+		t.Fatalf("expected flush at the 600ms idle deadline, got %d", n)
 	}
 }
 
