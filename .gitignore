@@ -11,6 +11,8 @@ daemonrun
 /claw
 /claw-*
 /claw_*
+# claw docs are versioned, only build output is ignored
+!/claw-*.md
 /cmd/claw/claw
 /cmd/claw/claw.exe
 
