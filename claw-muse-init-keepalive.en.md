@@ -137,54 +137,122 @@ Expected behavior and how to judge it:
 
 ---
 
-## 2. Keep-Alive Mechanism (Muse scheduled task)
+## 2. Keep-Alive Mechanism (script watchdog — important, do not use the wrong mechanism)
 
-Cadence: **every 30 minutes**. The task body below can be used as-is (adjust paths to the actual machine):
+**Use a pure-shell script watchdog (a hook), never an agent scheduled task (cron).** The difference is money: an agent task wakes a model on every round to read the task, run the checks, and decide to stay silent — tokens are spent even when everything is healthy and nothing is reported, and most of the cost is fixed context overhead. A script watchdog runs the checks and the repairs itself without any model involved: **when everything is healthy, token cost is exactly zero.** Because idle rounds are free, set the cadence to **every 5 minutes** — worst-case recovery drops from 30 minutes to about 5.
 
+How it works: a hook runs the script below every 5 minutes. The script performs three checks in order: (1) accesskey integrity — compare checksums against the backup (never read out the key's value); if missing or mismatched, copy the backup back and reset mode 600; if the backup is also missing, that is an unfixable problem. (2) Process liveness — if no claw process is running, start it via run.sh; success means a NEW `[TS] connected to turn server` line appears in daemon.log; at most 2 start attempts per round. (3) Connection liveness — if the process exists but has been up at least 10 minutes and the log shows only failures (no `connected`) in the last 10 minutes, treat the connection as dead: kill claw and restart as in step 2. If everything is healthy, the script ends with `silent` and wakes nobody. Only when it repaired something, or could not fix a problem, does it `wake` an agent, which then verifies the live state and reports to the user.
+
+### 2.1 The watchdog script (full text; save to `~/hooks/scripts/claw-watchdog.sh` and `chmod +x`)
+
+The `silent` / `wake` / `log` helpers come from the hook runtime (`$HATCH_HOOK_RUNTIME`). When `HATCH_HOOK_DRY_RUN=1`, the script only judges and performs no repairs.
+
+```bash
+#!/usr/bin/env bash
+# claw-watchdog: keep-alive for the CLIAnywhere host daemon (claw).
+# Pure shell — no model tokens while healthy. Repairs what it can itself;
+# wakes the agent only when it repaired something or cannot fix a problem.
+set -uo pipefail
+source "$HATCH_HOOK_RUNTIME"
+
+export HOME="/home/hatch"
+KEY="$HOME/.clianywhere/daemon.accesskey"
+BAK="$HOME/.secrets/clianywhere-daemon.accesskey.bak"
+DLOG="$HOME/.clianywhere/daemon.log"
+BASE="$HOME/workspace/claw-cli"
+DRY="${HATCH_HOOK_DRY_RUN:-0}"
+
+ACTIONS=""
+PROBLEMS=""
+note_action()  { ACTIONS="${ACTIONS:+$ACTIONS; }$1"; }
+note_problem() { PROBLEMS="${PROBLEMS:+$PROBLEMS; }$1"; }
+sanitize() { printf '%s' "$1" | tr -d '"\\' | tr '\n' ' '; }
+
+last_epoch() { # $1 = pattern; prints epoch of last matching log line, or 0
+  local line ts
+  line="$(grep -F "$1" "$DLOG" 2>/dev/null | tail -1)" || true
+  [ -n "${line:-}" ] || { echo 0; return; }
+  ts="$(printf '%s' "$line" | grep -oE '[0-9]{4}/[0-9]{2}/[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}' | head -1)"
+  [ -n "$ts" ] || { echo 0; return; }
+  date -d "$(printf '%s' "$ts" | sed 's|/|-|g')" +%s 2>/dev/null || echo 0
+}
+
+new_connected() { # $1 = byte offset of daemon.log before a start attempt
+  tail -c +$(($1 + 1)) "$DLOG" 2>/dev/null | grep -q "connected to turn server"
+}
+
+start_claw() { # one start attempt via run.sh; returns 0 if a NEW connected line appears
+  local off i
+  off="$(stat -c%s "$DLOG" 2>/dev/null || echo 0)"
+  if [ "$DRY" != "1" ]; then
+    ( cd "$BASE" && setsid nohup ./run.sh > claw-stdout.log 2>&1 & )
+  fi
+  for i in $(seq 1 15); do
+    [ "$DRY" = "1" ] || new_connected "$off" && return 0
+    sleep 2
+  done
+  [ "$DRY" = "1" ] && return 1
+  new_connected "$off"
+}
+
+# --- Check 1: accesskey integrity (compare only, never print contents) ---
+if [ ! -s "$KEY" ] || ! cmp -s "$KEY" "$BAK" 2>/dev/null; then
+  if [ -s "$BAK" ]; then
+    if [ "$DRY" != "1" ]; then cp "$BAK" "$KEY"; chmod 600 "$KEY"; fi
+    if cmp -s "$KEY" "$BAK" 2>/dev/null || [ "$DRY" = "1" ]; then
+      note_action "accesskey was missing/mismatched and has been restored from backup (mode 600)"
+    else
+      note_problem "accesskey restore from backup failed"
+    fi
+  else
+    note_problem "accesskey is missing/mismatched and the backup is also missing; user must re-send the key"
+  fi
+fi
+
+# --- Checks 2 & 3: process and connection liveness ---
+if ! pgrep -x claw >/dev/null 2>&1; then
+  if start_claw || start_claw; then
+    note_action "claw was not running; started via run.sh and verified a new connected line in daemon.log"
+  else
+    note_problem "claw is not running and start via run.sh did not produce a connected line; see tail of daemon.log"
+  fi
+else
+  NOW="$(date +%s)"
+  AGE="$(ps -o etimes= -p "$(pgrep -x claw | paste -sd,)" 2>/dev/null | sort -n | head -1 | tr -d ' ')"
+  LAST_CONN="$(last_epoch 'connected to turn server')"
+  LAST_FAIL="$(last_epoch 'failed')"
+  if [ "${AGE:-0}" -ge 600 ] && [ $((NOW - LAST_CONN)) -gt 600 ] && [ "$LAST_FAIL" -gt "$LAST_CONN" ] && [ $((NOW - LAST_FAIL)) -le 900 ]; then
+    if [ "$DRY" != "1" ]; then pkill -x claw || true; sleep 3; fi
+    if start_claw || start_claw; then
+      note_action "claw process was alive but connection dead (only failures in the last 10 minutes); restarted and verified connected"
+    else
+      note_problem "connection-dead restart attempted but no new connected line appeared; see tail of daemon.log"
+    fi
+  fi
+fi
+
+# --- Decision: exactly one of silent / wake ---
+if [ -n "$PROBLEMS" ]; then
+  wake "claw_watchdog_problem" "{\"actions\":\"$(sanitize "$ACTIONS")\",\"problems\":\"$(sanitize "$PROBLEMS")\"}"
+elif [ -n "$ACTIONS" ]; then
+  wake "claw_watchdog_repaired" "{\"actions\":\"$(sanitize "$ACTIONS")\",\"problems\":\"\"}"
+else
+  silent "healthy" '{}'
+fi
 ```
-Check and keep alive this machine's CLIAnywhere host daemon (claw).
-Perform these three checks in order:
 
-1. accesskey integrity: if ~/.clianywhere/daemon.accesskey is missing
-   or empty, or differs from the backup
-   ~/.secrets/clianywhere-daemon.accesskey.bak (compare checksums;
-   never print file contents), restore it by copying the backup back
-   and resetting permissions to 600, and report "rebuilt".
-   If the backup is also missing, report to the user immediately;
-   never generate or guess a key.
-2. process liveness: if no claw process is running, start it with
-   cd ~/workspace/claw-cli && setsid nohup ./run.sh > claw-stdout.log 2>&1 &
-   then wait about 10 seconds and re-check ~/.clianywhere/daemon.log.
-   The start counts as successful only if a new
-   "[TS] connected to turn server" line appears.
-   Try at most 2 starts per round; if it still fails, report the error
-   at the tail of the log and stop.
-3. connection liveness: if the process exists but daemon.log shows
-   only "[TS] connect ... failed" and no "connected" in the last
-   10 minutes, treat the connection as dead: kill the existing claw
-   processes (launcher and daemon are a pair; killing one makes the
-   other exit), then restart and verify as in step 2.
+### 2.2 Register the hook
 
-Reporting rules: if everything is fine and no action was taken, stay
-silent and do not disturb the user. If any repair action was taken
-(rebuilt key, started, restarted), report in one or two short sentences
-what was done and how it was verified. If something cannot be fixed,
-report the blocker with the log evidence and stop, leaving the
-decision to the user.
-```
+- id: `claw-watchdog-hook`; script: `~/hooks/scripts/claw-watchdog.sh`; **poll interval: 300 seconds (5 minutes)**; script timeout: 180 seconds.
+- A new hook starts disabled: `dry_run` it first (a healthy machine must return `silent` / `healthy`), then `enable` it.
+- The wake prompt for the agent must require: (1) independently verify the current state (claw process, ports 127.0.0.1:56300 and 56881, newest daemon.log lines, accesskey present with mode 600 — never read out the key's value); (2) report to the user in one or two short sentences what the watchdog did or failed to do and the verified current state; (3) if still down, at most one more start via run.sh, then report the outcome with log evidence — no retry loops.
 
-### Keep-alive acceptance tests (inject each fault and verify after setup)
 
-1. Temporarily rename the accesskey → the next round must restore it automatically, with permissions 600;
-2. Kill the claw process pair → the next round must restart it, and the log must show connected;
-3. Run one round with everything healthy → no report at all (silence).
-
----
 
 ## 3. Security & Discipline
 
 - The accesskey's value must never be written down: not in task text, logs, memory, or reports. The backup and the main file are the only two copies, both in mode-600 files; the keep-alive only ever `cp`s the file or compares checksums — it never reads the content for output.
-- Single instance: do not start another claw by hand outside the keep-alive task; it will collide with daemon.lock. If an instance is already running, inspect the process pair's state before any manual action.
+- Single instance: do not start another claw by hand outside the keep-alive task; it will collide with daemon.lock. If an instance is already running, inspect its process state before any manual action.
 - Bounded retries: any automatic repair is attempted at most twice per round; if it cannot be fixed, stop and report — never write an unbounded retry loop.
 - This manual authorizes actions within "initialization + keep-alive" only. Deleting the service, changing the key, sending information externally, and similar actions still require the user's confirmation on the spot.
 
@@ -195,6 +263,6 @@ decision to the user.
 | `tls: first record does not look like a TLS handshake` repeatedly | Direct connection intercepted by the gateway; not using the proxy | Check the build supports `--proxy` and run.sh passes it |
 | `read tcp ...:3128: i/o timeout`, only on first connect / new domain | Waiting on the platform review card | Remind the user to choose "Always allow"; the retry succeeds after approval |
 | Several `failed` lines followed by `connected` | Normal (retrying, or recovered after approval) | No action |
-| Process alive, but only `failed` for the last 10 minutes | Connection dead | Keep-alive step 3: restart the pair |
+| Process alive, but only `failed` for the last 10 minutes | Connection dead | Watchdog check 3: kill and restart it |
 | Lock-related error immediately at startup | An instance is already running | Inspect processes first; do not force a second instance |
 | accesskey file has vanished | A home-directory file was lost (has happened before) | Keep-alive step 1 restores from backup; if the backup is also gone, ask the user to re-send the key |
