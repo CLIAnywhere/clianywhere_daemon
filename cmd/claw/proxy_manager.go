@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/binary"
@@ -19,8 +20,12 @@ import (
 )
 
 // wsDialer skips TLS verification for WSS connections to self-signed / IP-address targets.
+// The app asks the daemon to open these, so they run through the daemon's
+// egress path (--proxy) like any other outbound connection; loopback/LAN
+// targets still dial directly.
 var wsDialer = &websocket.Dialer{
 	TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	NetDialContext:  dialAppTarget,
 }
 
 // ProxyManager manage all proxy tunnel connections
@@ -65,6 +70,7 @@ func NewProxyManager(d *Daemon, logger Logger) *ProxyManager {
 			Jar: jar,
 			Transport: &http.Transport{
 				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+				DialContext:     dialAppTarget,
 			},
 			Timeout: 30 * time.Second,
 		},
@@ -91,7 +97,9 @@ func (pm *ProxyManager) HandleConnect(msg *Message) {
 
 	// goroutine: async TCP dial, does not block message processing loop
 	go func() {
-		tcpConn, err := net.DialTimeout("tcp", targetAddr, 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		tcpConn, err := dialAppTarget(ctx, "tcp", targetAddr)
 		if err != nil {
 			pm.daemon.sendJSON(&Message{
 				Type:      TypeProxyError,

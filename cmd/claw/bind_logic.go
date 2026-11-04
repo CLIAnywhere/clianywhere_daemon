@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/http"
 	neturl "net/url"
 	"os"
@@ -63,16 +62,7 @@ func GenerateBindCode(cfg *Config) (*BindCodeResult, error) {
 func ConnectAndSendBindCode(wsURL, bindcode string) (*websocket.Conn, error) {
 	dialer := websocket.Dialer{
 		HandshakeTimeout: 10 * time.Second,
-		NetDial: func(network, addr string) (net.Conn, error) {
-			c, err := net.Dial(network, addr)
-			if err != nil {
-				return nil, err
-			}
-			if tc, ok := c.(*net.TCPConn); ok {
-				tc.SetNoDelay(true)
-			}
-			return c, nil
-		},
+		NetDialContext:   dialOutbound,
 	}
 	header := http.Header{}
 	header.Set("User-Agent", "CliAnyWhere/daemon")

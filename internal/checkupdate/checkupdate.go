@@ -5,9 +5,11 @@
 package checkupdate
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -53,9 +55,9 @@ type Asset struct {
 
 // Result is the outcome of an update check.
 type Result struct {
-	Current   string  // running daemon version (e.g. "1.0.1")
-	Latest    string  // latest release version, leading "v" stripped
-	Available bool    // true when a newer release exists
+	Current   string // running daemon version (e.g. "1.0.1")
+	Latest    string // latest release version, leading "v" stripped
+	Available bool   // true when a newer release exists
 	Release   *Release
 }
 
@@ -81,6 +83,29 @@ func (noopLogger) Errorf(string, ...any) {}
 func SetLogger(l Logger) {
 	if l != nil {
 		logger = l
+	}
+}
+
+// proxyDialContext, when set, is used for every outbound TCP connection of the
+// update check/download. The daemon installs its HTTP CONNECT dialer here when
+// --proxy is in effect. nil keeps the default http.Client behavior unchanged.
+var proxyDialContext func(ctx context.Context, network, addr string) (net.Conn, error)
+
+// SetProxyDialContext installs (or clears, with nil) the outbound dialer.
+func SetProxyDialContext(fn func(context.Context, string, string) (net.Conn, error)) {
+	proxyDialContext = fn
+}
+
+// newHTTPClient builds the client used for update traffic. With a proxy
+// dialer installed, a dedicated transport carries all connections through it;
+// TLS is still negotiated end-to-end over the tunnel by the transport itself.
+func newHTTPClient(timeout time.Duration) *http.Client {
+	if proxyDialContext == nil {
+		return &http.Client{Timeout: timeout}
+	}
+	return &http.Client{
+		Timeout:   timeout,
+		Transport: &http.Transport{DialContext: proxyDialContext},
 	}
 }
 
@@ -123,7 +148,7 @@ func fetchLatest() (*Release, error) {
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("User-Agent", "clianywhere-daemon")
 
-	client := &http.Client{Timeout: httpTimeout}
+	client := newHTTPClient(httpTimeout)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("checkupdate: request latest release: %w", err)
@@ -176,7 +201,7 @@ func Download(asset *Asset) (string, error) {
 	req.Header.Set("Accept", "application/octet-stream")
 	req.Header.Set("User-Agent", "clianywhere-daemon")
 
-	client := &http.Client{Timeout: downloadTimeout}
+	client := newHTTPClient(downloadTimeout)
 	resp, err := client.Do(req)
 	if err != nil {
 		logger.Errorf("[UPDATE] download %s failed: %v", asset.Name, err)

@@ -203,6 +203,15 @@ func (d *Daemon) handleP2PSignal(raw map[string]any) {
 		return
 	}
 
+	// HTTP proxy mode: the proxy carries TCP only, so UDP-based ICE/DTLS can
+	// never establish. Answer no offers and buffer no candidates — same
+	// user-visible path as ForceTS (app times out and falls back to the
+	// relay) — while peer_online/peer_offline below keep running so the
+	// per-connection security state still resets.
+	if ProxyEnabled() && (msgType == "p2p_offer" || msgType == "p2p_ice") {
+		return
+	}
+
 	switch msgType {
 	case "p2p_offer":
 		sdpOffer, _ := raw["sdp"].(string)

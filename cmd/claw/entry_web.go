@@ -64,10 +64,18 @@ func main() {
 		SetForceTSAddr(tsAddr)
 	}
 
+	// --proxy: route every outbound connection through an HTTP CONNECT proxy.
+	// Parsed before anything else; the flag stays in os.Args so the forked
+	// child process re-parses it itself (see forkToBackground).
+	args, err := parseProxyFlag(os.Args[1:])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(2)
+	}
+
 	// --autostart: launched by the OS autostart entry (HKCU Run key /
 	// LaunchAgent / systemd user unit). Silent mode: never opens a browser
 	// and exits quietly when another instance is already running.
-	args := os.Args[1:]
 	autostartMode := false
 	if len(args) > 0 && args[0] == "--autostart" {
 		autostartMode = true
@@ -78,7 +86,7 @@ func main() {
 	if len(args) >= 1 {
 		switch args[0] {
 		case "send":
-			handleSend()
+			handleSend(args[1:])
 			return
 		case "version":
 			ensureConsole()

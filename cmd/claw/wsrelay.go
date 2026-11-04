@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/http"
 	neturl "net/url"
 	"strings"
@@ -78,19 +77,18 @@ func NewWSTurnRelay(accessKey string, cfg *Config, logger Logger) *WSTurnRelay {
 
 // Connect connect directly to TurnServer WebSocket, send login, block until login_ok or timeout
 func (w *WSTurnRelay) Connect(url string) error {
+	if p := currentProxy(); p != nil {
+		w.logger.Infof("[TS] connecting %s via proxy %s", url, proxyDisplay(p))
+	}
 
+	// NetDialContext hands the raw TCP connection to gorilla. For wss:// gorilla
+	// then performs the TLS handshake itself on that conn, with the URL host
+	// name as SNI — so with a CONNECT proxy the tunnel carries end-to-end TLS
+	// and the proxy sees no plaintext. dialOutbound is a plain dial unless
+	// --proxy is in effect.
 	dialer := websocket.Dialer{
 		HandshakeTimeout: 10 * time.Second,
-		NetDial: func(network, addr string) (net.Conn, error) {
-			c, err := net.Dial(network, addr)
-			if err != nil {
-				return nil, err
-			}
-			if tc, ok := c.(*net.TCPConn); ok {
-				tc.SetNoDelay(true)
-			}
-			return c, nil
-		},
+		NetDialContext:   dialOutbound,
 	}
 	header := http.Header{}
 	header.Set("User-Agent", "CliAnyWhere/daemon")

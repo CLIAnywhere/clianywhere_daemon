@@ -25,11 +25,21 @@ func main() {
 		SetForceTSAddr(tsAddr)
 	}
 
+	// --proxy: route every outbound connection through an HTTP CONNECT proxy.
+	// The flag is deliberately left in os.Args: forkToBackground re-executes
+	// this binary with os.Args[1:] and the child parses it again itself.
+	args, err := parseProxyFlag(os.Args[1:])
+	if err != nil {
+		ensureConsole()
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(2)
+	}
+
 	// subcommand dispatch
-	if len(os.Args) >= 2 {
-		switch os.Args[1] {
+	if len(args) >= 1 {
+		switch args[0] {
 		case "send":
-			handleSend()
+			handleSend(args[1:])
 			return
 		case "version":
 			ensureConsole()

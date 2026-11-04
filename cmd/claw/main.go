@@ -17,8 +17,7 @@ import (
 )
 
 // handleSend handle send subcommand (shared CLI/GUI, pure CLI operation)
-func handleSend() {
-	args := os.Args[2:]
+func handleSend(args []string) {
 	if len(args) < 1 || args[0] == "" {
 		log.Fatal("Usage: daemon send <filepath>")
 	}
